@@ -25,7 +25,7 @@ training:
   batch_size: 256
   val_batch_size: 256
   gradient_accumulation_steps: 2
-  epochs: 1
+  epochs: 3
   learning_rate: 0.0003
   min_learning_rate: 0.00003
   warmup_steps: 5000
