@@ -1,0 +1,27 @@
+# Trained policy checkpoint loaded for POGEMA rollout evaluation.
+checkpoint: ../mapf-transformer-policy/runs/mapf_transformer_base/best.pt
+# Number of randomly generated evaluation episodes.
+episodes: 10
+# Episode i uses seed + i. Keep this disjoint from training seeds.
+seed: 1000
+# Fixed number of agents in each evaluation episode.
+num_agents: 16
+# These two fields ARE required here: evaluation currently generates random maps,
+# unlike dataset_grid_mapf_lns2.yaml, which reads fixed MAPF-GPT map catalogs.
+map_size: 21
+density: 0.25
+# Stop an episode after this many environment steps.
+max_episode_steps: 128
+# Conflicts are exposed as failed movements.
+collision_system: soft
+# auto selects CUDA when available.
+device: auto
+# false uses deterministic argmax; true samples from the action distribution.
+sample_actions: false
+# Used only when sample_actions=true; lower is sharper, higher is more random.
+# temperature: 1.0
+# null disables terminal rendering; ansi prints every frame without saving.
+render_mode: null
+# render_mode: ansi
+# null disables SVG recording; otherwise one animated SVG is saved per episode.
+save_svg_dir: null

@@ -1,0 +1,91 @@
+# Root for NPZ episodes, manifests, resolved config, and result tables.
+output_root: ../data/mapf_lns2
+
+generation:
+  # Independent POGEMA + MAPF-LNS2 scenarios executed concurrently.
+  num_processes: 24
+
+environment:
+  # Maximum recorded/executed steps. Plans longer than this are rejected.
+  max_episode_steps: 128
+  # Radius 7 corresponds to the policy's 15x15 Ego local map.
+  obs_radius: 7
+  # Agents remain visible/active at their goals for static MAPF trajectories.
+  on_target: nothing
+  # Conflicting commands become failed moves instead of hidden priority moves.
+  collision_system: soft
+  # Store online-causal stable neighbor slots in each NPZ episode.
+  precompute_tracking: true
+  # Keep an absent neighbor's slot for one frame before reassignment.
+  tracking_grace_steps: 1
+  # Use np.savez_compressed; disable only when generation speed is more important than disk.
+  compress: true
+
+splits:
+  maze_train:
+    family: maze
+    subset: train
+    output_dir: maze/train
+    maps_file: maps/mapf_gpt/maze_train.yaml
+    # Zero-based, stop-exclusive slice in catalog order; edit this to shard PCs.
+    map_indices: {start: 0, stop: 9998}
+    seeds: {start: 0, stop: 100}
+    num_agents: [16, 24, 32]
+  maze_val:
+    family: maze
+    subset: val
+    output_dir: maze/val
+    # MAPF-GPT calls this source catalog "eval"; here it is reserved for
+    # training-time validation data, not post-training rollout evaluation.
+    maps_file: maps/mapf_gpt/maze_eval.yaml
+    map_indices: {start: 0, stop: 200}
+    seeds: {start: 0, stop: 10}
+    num_agents: [8, 16, 24, 32]
+  random_train:
+    family: random
+    subset: train
+    output_dir: random/train
+    maps_file: maps/mapf_gpt/random_train.yaml
+    map_indices: {start: 0, stop: 10000}
+    seeds: {start: 0, stop: 100}
+    num_agents: [16, 24, 32]
+  random_val:
+    family: random
+    subset: val
+    output_dir: random/val
+    # Preserve the upstream catalog filename while exposing a clear val split.
+    maps_file: maps/mapf_gpt/random_eval.yaml
+    map_indices: {start: 0, stop: 128}
+    seeds: {start: 0, stop: 10}
+    num_agents: [8, 16, 24, 32]
+
+algorithm: MAPF-LNS2
+algorithms:
+  MAPF-LNS2:
+    name: MAPF-LNS2
+    # Official MAPF-LNS2 executable built by tools/setup_mapf_lns2.sh.
+    binary: ../external/MAPF-LNS2/lns
+    # Per-scenario wall-clock solver budget in seconds.
+    cutoff_time: 10
+    # MAPF-LNS2 initial/replanning algorithms.
+    init_algo: PP
+    replan_algo: PP
+    # Neighborhood selection strategy used by LNS.
+    destroy_strategy: Adaptive
+    # Number of agents replanned in one LNS neighborhood.
+    neighbor_size: 8
+    # MAPF-LNS2 counts the initial solution as iteration 1. Keep this much
+    # larger than any 10-second run so cutoff_time, not iteration count, stops repair.
+    max_iterations: 1000000000
+    # MAPF-LNS2 logging: 0 none, 1 summary, 2 LNS detail, 3 MAPF detail.
+    screen: 0
+
+results_views:
+  # Console aggregation by the four official dataset splits.
+  BySplit:
+    type: tabular
+    group_by: [family, subset]
+  # Finer console aggregation for inspecting map/agent-count difficulty.
+  ByMapAndAgents:
+    type: tabular
+    group_by: [family, subset, map_name, num_agents]

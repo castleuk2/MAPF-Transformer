@@ -1,0 +1,80 @@
+# Expansion trajectories for a final dataset of approximately:
+#   train = 150M supervised samples
+#   val   =  15M supervised samples
+# after merging with data/mapf_lns2_1h and applying goal_wait_keep_ratio=0.2.
+#
+# Map ranges are disjoint from the existing train maps and from each other.
+# A 5% map margin is generated because MAPF-LNS2 failures and trajectory SoC
+# vary by map. The final merged manifests should be trimmed by actual sample
+# counts rather than assuming every attempted scenario succeeds.
+output_root: ../data/mapf_lns2_150m_expansion
+
+generation:
+  num_processes: 24
+
+environment:
+  max_episode_steps: 128
+  obs_radius: 7
+  on_target: nothing
+  collision_system: soft
+  precompute_tracking: true
+  tracking_grace_steps: 1
+  compress: true
+
+splits:
+  # Existing train maps use indices [0, 122). Generate [122, 5522):
+  # 5,400 new maps/family, 10 seeds/map, and three agent counts.
+  maze_train:
+    family: maze
+    subset: train
+    output_dir: maze/train
+    maps_file: maps/mapf_gpt/maze_train.yaml
+    map_indices: {start: 122, stop: 5522}
+    seeds: {start: 0, stop: 10}
+    num_agents: [16, 24, 32]
+  random_train:
+    family: random
+    subset: train
+    output_dir: random/train
+    maps_file: maps/mapf_gpt/random_train.yaml
+    map_indices: {start: 122, stop: 5522}
+    seeds: {start: 0, stop: 10}
+    num_agents: [16, 24, 32]
+
+  # The original eval catalogs are too small for 15M validation samples.
+  # Reserve disjoint late ranges of the train catalogs as held-out maps.
+  # 2,820 maps/family gives roughly 5% margin over the estimated requirement.
+  maze_val:
+    family: maze
+    subset: val
+    output_dir: maze/val
+    maps_file: maps/mapf_gpt/maze_train.yaml
+    map_indices: {start: 7000, stop: 9820}
+    seeds: {start: 0, stop: 2}
+    num_agents: [16, 24, 32]
+  random_val:
+    family: random
+    subset: val
+    output_dir: random/val
+    maps_file: maps/mapf_gpt/random_train.yaml
+    map_indices: {start: 7000, stop: 9820}
+    seeds: {start: 0, stop: 2}
+    num_agents: [16, 24, 32]
+
+algorithm: MAPF-LNS2
+algorithms:
+  MAPF-LNS2:
+    name: MAPF-LNS2
+    binary: ../external/MAPF-LNS2/lns
+    cutoff_time: 10
+    init_algo: PP
+    replan_algo: PP
+    destroy_strategy: Adaptive
+    neighbor_size: 8
+    max_iterations: 1000000000
+    screen: 0
+
+results_views:
+  BySplit:
+    type: tabular
+    group_by: [family, subset]

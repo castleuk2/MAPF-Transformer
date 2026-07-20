@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pogema-mapf-transformer"
+version = "0.1.0"
+description = "POGEMA adapter, expert planning, evaluation and dataset generation for MAPF Transformer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "MAPF Transformer project"}]
+dependencies = [
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "mapf-transformer-policy>=0.1.0",
+]
+
+[project.optional-dependencies]
+pogema = [
+  "gymnasium>=0.29",
+  "pogema @ git+https://github.com/Cognitive-AI-Systems/pogema.git",
+]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+pogema-mapf-generate = "pogema_mapf_transformer.dataset_generator:main"
+pogema-mapf-generate-grid = "pogema_mapf_transformer.grid_dataset_generator:main"
+pogema-mapf-infer = "pogema_mapf_transformer.evaluation:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

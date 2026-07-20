@@ -1,0 +1,78 @@
+# Approximately one hour on 24 fully utilized CPU workers when every
+# MAPF-LNS2 scenario consumes its 10-second cutoff.
+output_root: ../data/mapf_lns2_1h
+
+generation:
+  num_processes: 24
+
+environment:
+  max_episode_steps: 128
+  obs_radius: 7
+  on_target: nothing
+  collision_system: soft
+  precompute_tracking: true
+  tracking_grace_steps: 1
+  compress: true
+
+# MAPF-GPT's source generation grids contain 5,999,400 train scenarios and
+# 13,120 validation scenarios when counted as maps * seeds * agent-count values:
+# 457.27:1. The reduced grid below is the closest practical one-hour construction.
+# Each family has exactly the same scenario count and train/val ratio:
+# train = 122 maps * 10 seeds * 3 agent counts = 3,660 scenarios
+# val   =  1 map  *  2 seeds * 4 agent counts =      8 scenarios
+# total = 3,668 maze + 3,668 random = 7,336 scenarios
+# reduced train/val ratio = 7,320:16 = 457.5:1
+splits:
+  maze_train:
+    family: maze
+    subset: train
+    output_dir: maze/train
+    maps_file: maps/mapf_gpt/maze_train.yaml
+    map_indices: {start: 0, stop: 122}
+    seeds: {start: 0, stop: 10}
+    num_agents: [16, 24, 32]
+  maze_val:
+    family: maze
+    subset: val
+    output_dir: maze/val
+    maps_file: maps/mapf_gpt/maze_eval.yaml
+    map_indices: {start: 0, stop: 1}
+    seeds: {start: 0, stop: 2}
+    num_agents: [8, 16, 24, 32]
+  random_train:
+    family: random
+    subset: train
+    output_dir: random/train
+    maps_file: maps/mapf_gpt/random_train.yaml
+    map_indices: {start: 0, stop: 122}
+    seeds: {start: 0, stop: 10}
+    num_agents: [16, 24, 32]
+  random_val:
+    family: random
+    subset: val
+    output_dir: random/val
+    maps_file: maps/mapf_gpt/random_eval.yaml
+    map_indices: {start: 0, stop: 1}
+    seeds: {start: 0, stop: 2}
+    num_agents: [8, 16, 24, 32]
+
+algorithm: MAPF-LNS2
+algorithms:
+  MAPF-LNS2:
+    name: MAPF-LNS2
+    binary: ../external/MAPF-LNS2/lns
+    cutoff_time: 10
+    init_algo: PP
+    replan_algo: PP
+    destroy_strategy: Adaptive
+    neighbor_size: 8
+    max_iterations: 1000000000
+    screen: 0
+
+results_views:
+  BySplit:
+    type: tabular
+    group_by: [family, subset]
+  ByMapAndAgents:
+    type: tabular
+    group_by: [family, subset, map_name, num_agents]

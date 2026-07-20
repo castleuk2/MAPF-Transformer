@@ -1,0 +1,51 @@
+# Same 8.81M model as the initial run; only dataset sampling/validation changes.
+model:
+  map_size: 15
+  map_latents: 16
+  max_neighbors: 15
+  history_frames: 15
+  d_model: 256
+  n_heads: 8
+  temporal_layers: 8
+  spatial_latent_layers: 1
+  dropout: 0.1
+  mlp_ratio: 4
+  aux_map_reconstruction: true
+  aux_map_loss_weight: 0.05
+
+training:
+  # Existing expert trajectories already retain the complete final-goal WAIT suffix.
+  train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
+  # The original 14-episode validation split has been replaced in-place by the
+  # expanded held-out expert split.
+  val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
+  output_dir: mapf-transformer-policy/runs/mapf_lns2_goal_wait20
+
+  batch_size: 16
+  # Validation has no backward activations, so use a larger batch.
+  val_batch_size: 128
+  gradient_accumulation_steps: 16
+  epochs: 3
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  warmup_steps: 2000
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  num_workers: 8
+  device: auto
+  amp: true
+  log_every: 20
+  validate_every: 2000
+  save_every: 5000
+  history_augmentation: true
+  min_history_frames: 1
+
+  # All WAIT frames remain in temporal history; approximately 20% of the
+  # final-stable goal WAIT suffix is selected as supervised targets.
+  goal_wait_keep_ratio: 0.2
+
+  # The expanded validation corpus is retained on disk. Each periodic check
+  # samples evenly over its complete index range rather than taking early maps.
+  max_val_samples: 65536

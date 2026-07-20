@@ -1,0 +1,34 @@
+# Local Python environment
+MAPF/
+.venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+
+# Generated training/evaluation artifacts
+mapf-transformer-policy/runs/
+mapf-transformer-policy/data/
+pogema-mapf-transformer/runs/
+pogema-mapf-transformer/results/
+pogema-mapf-transformer/renders/
+pogema-mapf-transformer/weights/
+pogema-mapf-transformer/mapf-transformer-policy/
+*.log
+*.pid
+*.pt
+
+# Track only the 1-hour expert dataset used by the ablations.
+pogema-mapf-transformer/data/*
+!pogema-mapf-transformer/data/mapf_lns2_1h/
+!pogema-mapf-transformer/data/mapf_lns2_1h/**
+
+# Upstream/build trees are installed separately.
+mapf-gpt-mapf-lns2/
+pogema-mapf-transformer/external/
+
+# Local archives and editor/OS files
+*.zip
+.DS_Store
+.idea/
+.vscode/

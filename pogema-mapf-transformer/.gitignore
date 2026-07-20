@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+data/*
+!data/mapf_lns2_1h/
+!data/mapf_lns2_1h/**
+runs/

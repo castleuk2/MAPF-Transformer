@@ -1,0 +1,5 @@
+-e ../mapf-transformer-policy
+numpy>=1.24
+PyYAML>=6.0
+gymnasium>=0.29
+pogema @ git+https://github.com/Cognitive-AI-Systems/pogema.git

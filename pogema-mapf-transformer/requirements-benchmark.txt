@@ -1,0 +1,4 @@
+# Optional dependencies for benchmark_compare.py.
+MAPF-GPT @ git+https://github.com/CognitiveAISystems/MAPF-GPT.git@d6307447ddc6bc2b7bf5da4f81d4e0707fbc8fa3
+cppimport==22.7.17
+pybind11==2.13.1

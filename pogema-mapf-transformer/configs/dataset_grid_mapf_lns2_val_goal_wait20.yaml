@@ -1,0 +1,56 @@
+# Expanded expert-state validation dataset. These dataset-validation maps have
+# zero name/content overlap with the official post-training eval_configs maps.
+output_root: ../data/mapf_lns2_val_goal_wait20
+
+generation:
+  num_processes: 24
+
+environment:
+  max_episode_steps: 128
+  obs_radius: 7
+  on_target: nothing
+  collision_system: soft
+  precompute_tracking: true
+  tracking_grace_steps: 1
+  compress: true
+
+# 64 held-out maps * 2 seeds * 3 in-distribution agent counts per family.
+# Total attempted validation episodes: 384 maze + 384 random = 768.
+splits:
+  maze_val:
+    family: maze
+    subset: val
+    output_dir: maze/val
+    maps_file: maps/mapf_gpt/maze_eval.yaml
+    map_indices: {start: 0, stop: 64}
+    seeds: {start: 0, stop: 2}
+    num_agents: [16, 24, 32]
+  random_val:
+    family: random
+    subset: val
+    output_dir: random/val
+    maps_file: maps/mapf_gpt/random_eval.yaml
+    map_indices: {start: 0, stop: 64}
+    seeds: {start: 0, stop: 2}
+    num_agents: [16, 24, 32]
+
+algorithm: MAPF-LNS2
+algorithms:
+  MAPF-LNS2:
+    name: MAPF-LNS2
+    binary: ../external/MAPF-LNS2/lns
+    cutoff_time: 10
+    init_algo: PP
+    replan_algo: PP
+    destroy_strategy: Adaptive
+    neighbor_size: 8
+    max_iterations: 1000000000
+    screen: 0
+
+results_views:
+  ByFamily:
+    type: tabular
+    group_by: [family, subset]
+  ByMapAndAgents:
+    type: tabular
+    group_by: [family, subset, map_name, num_agents]

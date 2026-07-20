@@ -1,0 +1,83 @@
+{
+  "sample_definition": "base expert samples before final arrival; training may restore final-goal WAIT targets in the loader",
+  "sample_formula_per_episode": "base samples = sum(arrival_steps) = SoC",
+  "totals": {
+    "attempted_episodes": 8088,
+    "generated_episodes": 7727,
+    "failed_episodes": 361,
+    "rectangular_actions": 6309296,
+    "goal_waits_removed": 3206159,
+    "training_samples": 3103137
+  },
+  "subsets": {
+    "train": {
+      "attempted_episodes": 7320,
+      "generated_episodes": 6988,
+      "failed_episodes": 332,
+      "rectangular_actions": 5732120,
+      "goal_waits_removed": 2913057,
+      "training_samples": 2819063
+    },
+    "val": {
+      "attempted_episodes": 768,
+      "generated_episodes": 739,
+      "failed_episodes": 29,
+      "rectangular_actions": 577176,
+      "goal_waits_removed": 293102,
+      "training_samples": 284074
+    }
+  },
+  "families": {
+    "maze": {
+      "attempted_episodes": 4044,
+      "generated_episodes": 4043,
+      "failed_episodes": 1,
+      "rectangular_actions": 3620704,
+      "goal_waits_removed": 1665634,
+      "training_samples": 1955070
+    },
+    "random": {
+      "attempted_episodes": 4044,
+      "generated_episodes": 3684,
+      "failed_episodes": 360,
+      "rectangular_actions": 2688592,
+      "goal_waits_removed": 1540525,
+      "training_samples": 1148067
+    }
+  },
+  "splits": {
+    "maze_train": {
+      "attempted_episodes": 3660,
+      "generated_episodes": 3659,
+      "failed_episodes": 1,
+      "rectangular_actions": 3287184,
+      "goal_waits_removed": 1513365,
+      "training_samples": 1773819
+    },
+    "maze_val": {
+      "attempted_episodes": 384,
+      "generated_episodes": 384,
+      "failed_episodes": 0,
+      "rectangular_actions": 333520,
+      "goal_waits_removed": 152269,
+      "training_samples": 181251
+    },
+    "random_train": {
+      "attempted_episodes": 3660,
+      "generated_episodes": 3329,
+      "failed_episodes": 331,
+      "rectangular_actions": 2444936,
+      "goal_waits_removed": 1399692,
+      "training_samples": 1045244
+    },
+    "random_val": {
+      "attempted_episodes": 384,
+      "generated_episodes": 355,
+      "failed_episodes": 29,
+      "rectangular_actions": 243656,
+      "goal_waits_removed": 140833,
+      "training_samples": 102823
+    }
+  },
+  "train_val_sample_ratio": 9.923692982110296
+}
