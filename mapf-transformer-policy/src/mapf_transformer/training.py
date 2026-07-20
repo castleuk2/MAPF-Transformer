@@ -17,9 +17,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 
 from .checkpoint import load_checkpoint_payload, save_checkpoint
-from .config import ExperimentConfig, load_experiment_config, save_experiment_config
+from .config import ExperimentConfig, ModelConfig, load_experiment_config, save_experiment_config
 from .dataset import EpisodeSequenceDataset
 from .model import MAPFTransformer
+from .packed_dataset import PackedEpisodeSequenceDataset, unpack_packed_batch
 
 
 def append_metric(metrics_file: Path, event: str, **values: object) -> None:
@@ -75,6 +76,21 @@ def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str
     return {name: tensor.to(device, non_blocking=True) for name, tensor in batch.items()}
 
 
+def prepare_batch(
+    batch: dict[str, torch.Tensor], device: torch.device, model_config: ModelConfig
+) -> dict[str, torch.Tensor]:
+    moved = move_batch(batch, device)
+    return unpack_packed_batch(moved, model_config)
+
+
+def dataset_class(dataset_format: str):
+    if dataset_format == "raw":
+        return EpisodeSequenceDataset
+    if dataset_format == "packed":
+        return PackedEpisodeSequenceDataset
+    raise ValueError(f"Unsupported dataset format: {dataset_format}")
+
+
 def create_scheduler(
     optimizer: torch.optim.Optimizer,
     warmup_steps: int,
@@ -110,7 +126,7 @@ def evaluate(
     total_examples = 0
     batches = 0
     for batch in loader:
-        batch = move_batch(batch, device)
+        batch = prepare_batch(batch, device, model.config)
         # Compute the auxiliary objective during validation as well so train and
         # validation metrics use the same loss definition. Inference keeps the
         # reconstruction decoder disabled by default while the model is in eval mode.
@@ -158,7 +174,8 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
     if distributed:
         dist.barrier()
 
-    train_dataset = EpisodeSequenceDataset(
+    sequence_dataset = dataset_class(train_cfg.dataset_format)
+    train_dataset = sequence_dataset(
         train_cfg.train_manifest,
         model_cfg,
         history_augmentation=train_cfg.history_augmentation,
@@ -178,10 +195,11 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
         num_workers=train_cfg.num_workers,
         pin_memory=device.type == "cuda",
         drop_last=False,
+        persistent_workers=train_cfg.num_workers > 0,
     )
     val_loader = None
     if train_cfg.val_manifest and Path(train_cfg.val_manifest).exists():
-        val_dataset = EpisodeSequenceDataset(
+        val_dataset = sequence_dataset(
             train_cfg.val_manifest,
             model_cfg,
             history_augmentation=False,
@@ -205,6 +223,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             shuffle=False,
             num_workers=train_cfg.num_workers,
             pin_memory=device.type == "cuda",
+            persistent_workers=train_cfg.num_workers > 0,
         )
 
     raw_model = MAPFTransformer(model_cfg).to(device)
@@ -252,7 +271,8 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
     if is_main:
         effective_batch = train_cfg.batch_size * train_cfg.gradient_accumulation_steps
         print(
-            f"training device={device} world_size={world_size} micro_batch={train_cfg.batch_size} "
+            f"training device={device} world_size={world_size} "
+            f"dataset_format={train_cfg.dataset_format} micro_batch={train_cfg.batch_size} "
             f"global_accumulation={train_cfg.gradient_accumulation_steps} "
             f"effective_batch={effective_batch} steps_per_epoch={steps_per_epoch} "
             f"total_steps={total_steps}",
@@ -272,6 +292,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             steps_per_epoch=steps_per_epoch,
             total_steps=total_steps,
             goal_wait_keep_ratio=train_cfg.goal_wait_keep_ratio,
+            dataset_format=train_cfg.dataset_format,
         )
 
     optimizer.zero_grad(set_to_none=True)
@@ -285,7 +306,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             group_offset = batch_index % accumulation_per_rank
             group_size = min(accumulation_per_rank, loader_batches - batch_index + group_offset)
             should_step = group_offset + 1 == group_size
-            batch = move_batch(batch, device)
+            batch = prepare_batch(batch, device, model_cfg)
             sync_context = nullcontext() if (not distributed or should_step) else model.no_sync()
             with sync_context:
                 with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
@@ -456,6 +477,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-manifest", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--dataset-format", choices=["raw", "packed"], default=None)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=None)
     return parser
@@ -472,6 +494,8 @@ def main(argv: Iterable[str] | None = None) -> None:
         config.training.output_dir = args.output_dir
     if args.device:
         config.training.device = args.device
+    if args.dataset_format:
+        config.training.dataset_format = args.dataset_format
     if args.max_steps is not None:
         config.training.max_steps = args.max_steps
     if args.gradient_accumulation_steps is not None:

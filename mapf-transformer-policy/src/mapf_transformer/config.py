@@ -76,6 +76,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class TrainingConfig:
+    dataset_format: str = "raw"
     train_manifest: str = "data/train/manifest.jsonl"
     val_manifest: str | None = "data/val/manifest.jsonl"
     output_dir: str = "runs/mapf_transformer"
@@ -107,6 +108,8 @@ class TrainingConfig:
     max_val_samples: int | None = None
 
     def validate(self, model: ModelConfig) -> None:
+        if self.dataset_format not in {"raw", "packed"}:
+            raise ValueError("dataset_format must be 'raw' or 'packed'")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if self.val_batch_size is not None and self.val_batch_size <= 0:
