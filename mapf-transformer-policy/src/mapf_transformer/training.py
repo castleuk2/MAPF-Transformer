@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, DistributedSampler, Subset
 from .checkpoint import load_checkpoint_payload, save_checkpoint
 from .config import ExperimentConfig, ModelConfig, load_experiment_config, save_experiment_config
 from .dataset import EpisodeSequenceDataset
+from .family_sampler import FamilyRatioSampler
 from .model import MAPFTransformer
 from .packed_dataset import PackedEpisodeSequenceDataset, unpack_packed_batch
 
@@ -184,9 +185,24 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
         max_samples=train_cfg.max_train_samples,
         seed=train_cfg.seed,
     )
-    train_sampler = DistributedSampler(
-        train_dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=train_cfg.seed
-    ) if distributed else None
+    if train_cfg.train_maze_ratio is not None:
+        train_sampler = FamilyRatioSampler(
+            train_dataset,
+            maze_ratio=train_cfg.train_maze_ratio,
+            num_replicas=world_size,
+            rank=rank,
+            seed=train_cfg.seed,
+        )
+    elif distributed:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True,
+            seed=train_cfg.seed,
+        )
+    else:
+        train_sampler = None
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,
@@ -292,6 +308,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             steps_per_epoch=steps_per_epoch,
             total_steps=total_steps,
             goal_wait_keep_ratio=train_cfg.goal_wait_keep_ratio,
+            train_maze_ratio=train_cfg.train_maze_ratio,
             dataset_format=train_cfg.dataset_format,
         )
 

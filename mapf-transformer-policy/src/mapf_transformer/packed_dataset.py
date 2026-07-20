@@ -328,7 +328,7 @@ def packed_manifest_record(
         stored_path = output_path.relative_to(manifest_path.parent)
     except ValueError:
         stored_path = output_path
-    return {
+    record = {
         "path": str(stored_path),
         "source_path": source_record["path"],
         "time_steps": int(source_record["time_steps"]),
@@ -342,6 +342,13 @@ def packed_manifest_record(
             "one_hop_ctg": config.one_hop_ctg,
         },
     }
+    # Keep source grouping metadata in newly generated caches. Older packed
+    # manifests remain compatible because the sampler can infer the family
+    # from source_path (maze/... or random/...).
+    for key in ("map_family", "subset", "split", "map_name", "seed", "planner"):
+        if key in source_record:
+            record[key] = source_record[key]
+    return record
 
 
 def write_packed_manifest(records: list[dict[str, Any]], path: Path) -> None:

@@ -104,6 +104,10 @@ class TrainingConfig:
     # Keep this fraction of the already-stored final-goal WAIT suffix as
     # supervised targets. All frames remain available when constructing history.
     goal_wait_keep_ratio: float = 0.0
+    # Optional sample-level family balancing for the training sampler.
+    # For example, 0.9 reproduces MAPF-GPT's 90% Maze / 10% Random mix
+    # without duplicating or rebuilding the underlying raw/packed dataset.
+    train_maze_ratio: float | None = None
     max_train_samples: int | None = None
     max_val_samples: int | None = None
 
@@ -124,6 +128,8 @@ class TrainingConfig:
             raise ValueError("min_history_frames must be within the model history window")
         if not 0.0 <= self.goal_wait_keep_ratio <= 1.0:
             raise ValueError("goal_wait_keep_ratio must be in [0, 1]")
+        if self.train_maze_ratio is not None and not 0.0 < self.train_maze_ratio < 1.0:
+            raise ValueError("train_maze_ratio must be strictly between 0 and 1")
 
 
 @dataclass(slots=True)
