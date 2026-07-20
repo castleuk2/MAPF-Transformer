@@ -11,6 +11,7 @@ From the workspace root, with the `MAPF` virtual environment activated:
 
 ```bash
 python -m pip install -r mapf-gpt-mapf-lns2/requirements-mapf-lns2.txt
+python -m pip install -e mapf-gpt-mapf-lns2
 ```
 
 The tokenizer C++ extensions are built automatically by `cppimport` on the
@@ -47,3 +48,20 @@ Each output directory receives a `conversion_summary.json`. Check its
 ```bash
 python -m pytest mapf-gpt-mapf-lns2/tests/test_npz_conversion.py -q
 ```
+
+## Train MAPF-GPT-6M
+
+The repository also includes the modified GPU-resident Arrow loader, DDP
+training script, MAPF-GPT-6M model, and inference implementation. The supplied
+comparison config targets the 1-hour converted dataset.
+
+```bash
+cd mapf-gpt-mapf-lns2
+mkdir -p runs/mapf_gpt_6m_mapf_lns2
+CUDA_VISIBLE_DEVICES=0,1 \
+../MAPF/bin/torchrun --standalone --nproc_per_node=2 \
+  train.py experiment_setup/config-6M-mapf-lns2.py
+```
+
+Generated Arrow data, run logs, compiled extensions, and checkpoints remain
+local and are not tracked by Git.
