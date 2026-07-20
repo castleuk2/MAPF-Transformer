@@ -23,8 +23,20 @@ pogema-mapf-transformer/data/*
 !pogema-mapf-transformer/data/mapf_lns2_1h/
 !pogema-mapf-transformer/data/mapf_lns2_1h/**
 
-# Upstream/build trees are installed separately.
-mapf-gpt-mapf-lns2/
+# MAPF-GPT conversion/training source is tracked, but generated artifacts are not.
+mapf-gpt-mapf-lns2/data/
+mapf-gpt-mapf-lns2/data_smoke/
+mapf-gpt-mapf-lns2/data_smoke_multi/
+mapf-gpt-mapf-lns2/runs/
+mapf-gpt-mapf-lns2/.git/
+mapf-gpt-mapf-lns2/**/*.so
+mapf-gpt-mapf-lns2/**/.rendered.*
+mapf-gpt-mapf-lns2/dataset/lacam/CMakeFiles/
+# Only the explicitly tracked converter sources are distributed from this
+# workspace; the rest remains the local upstream checkout.
+mapf-gpt-mapf-lns2/*
+
+# Other upstream/build trees are installed separately.
 pogema-mapf-transformer/external/
 
 # Local archives and editor/OS files
