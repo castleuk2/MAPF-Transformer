@@ -1,0 +1,46 @@
+# High-VRAM-throughput variant of the 150M combined model.
+# Two GPUs x micro-batch 256 x one local micro-step = effective batch 512.
+# Step-based schedules are halved relative to the effective-batch-256 config so
+# warmup, validation, and checkpoint intervals cover the same number of samples.
+model:
+  map_size: 15
+  map_latents: 32
+  one_hop_ctg: true
+  max_neighbors: 15
+  history_frames: 15
+  d_model: 256
+  n_heads: 8
+  temporal_layers: 8
+  spatial_latent_layers: 1
+  dropout: 0.1
+  mlp_ratio: 4
+  aux_map_reconstruction: true
+  aux_map_loss_weight: 0.05
+
+training:
+  dataset_format: packed
+  train_manifest: pogema-mapf-transformer/data/mapf_lns2_150m_expansion_packed_one_hop_ctg/train/manifest.jsonl
+  val_manifest: pogema-mapf-transformer/data/mapf_lns2_150m_expansion_packed_one_hop_ctg/val/manifest.jsonl
+  output_dir: mapf-transformer-policy/runs/packed_latent32_one_hop_ctg_150m_maze90_mb256
+  batch_size: 256
+  val_batch_size: 256
+  gradient_accumulation_steps: 2
+  epochs: 1
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  warmup_steps: 5000
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  grad_clip: 1.0
+  num_workers: 12
+  device: auto
+  amp: true
+  log_every: 50
+  validate_every: 5000
+  save_every: 25000
+  history_augmentation: true
+  min_history_frames: 1
+  goal_wait_keep_ratio: 0.2
+  train_maze_ratio: 0.9
+  max_val_samples: 65536
