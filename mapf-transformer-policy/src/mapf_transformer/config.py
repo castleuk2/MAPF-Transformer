@@ -18,6 +18,9 @@ class ModelConfig:
     map_size: int = 15
     map_latents: int = 16
     one_hop_ctg: bool = False
+    metadata_encoder: str = "baseline"
+    graph_attention: bool = False
+    graph_layers: int = 0
     max_neighbors: int = 15
     history_frames: int = 15
     d_model: int = 256
@@ -57,6 +60,14 @@ class ModelConfig:
             raise ValueError("map_size must be a positive odd number so Ego has a center cell")
         if self.map_latents <= 0:
             raise ValueError("map_latents must be positive")
+        if self.metadata_encoder not in {"baseline", "grouped"}:
+            raise ValueError("metadata_encoder must be 'baseline' or 'grouped'")
+        if self.graph_layers < 0:
+            raise ValueError("graph_layers must be non-negative")
+        if self.graph_attention != (self.graph_layers > 0):
+            raise ValueError(
+                "graph_attention must be true exactly when graph_layers is positive"
+            )
         if self.max_neighbors < 0:
             raise ValueError("max_neighbors must be non-negative")
         if self.history_frames <= 0:

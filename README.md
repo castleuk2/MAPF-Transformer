@@ -352,6 +352,48 @@ python inference.py \
   --episodes 1 --save-svg-dir renders
 ```
 
+## Metadata/Graph ablation과 1-hour packed cache
+
+기존 baseline은 유지하며 같은 1-hour trajectory로 다음 ablation을 실행할 수 있습니다.
+
+- Experiment 1: grouped/gated metadata encoder
+- Experiment 2: baseline metadata + edge-aware graph attention 1 layer
+- Experiment 3: grouped metadata + edge-aware graph attention 1 layer
+
+세 실험은 동일한 입력 필드를 사용하므로 packed cache는 한 번만 생성해 공유합니다.
+
+```bash
+PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
+  mapf-transformer-policy/pack_dataset.py \
+  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl \
+  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/train \
+  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
+  --workers 24
+
+PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
+  mapf-transformer-policy/pack_dataset.py \
+  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl \
+  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/val \
+  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
+  --workers 24
+```
+
+예를 들어 Experiment 1의 2-GPU 학습은 다음과 같습니다.
+
+```bash
+mkdir -p mapf-transformer-policy/runs/packed_experiment1_grouped_metadata
+CUDA_VISIBLE_DEVICES=0,1 PYTHONPATH=mapf-transformer-policy/src \
+torchrun --standalone --nproc_per_node=2 mapf-transformer-policy/train.py \
+  --config mapf-transformer-policy/configs/packed_experiment1_grouped_metadata.yaml \
+  2>&1 | tee mapf-transformer-policy/runs/packed_experiment1_grouped_metadata/console.log
+```
+
+Experiment 2와 3은 각각
+`packed_experiment2_graph_attention_l1.yaml`,
+`packed_experiment3_grouped_metadata_graph_l1.yaml`을 사용합니다. Packed cache는
+lossless cache이며 GPU에서 기존 입력 tensor로 복원되므로 raw/packed 입력에 따른
+모델 의미와 학습 target은 동일합니다.
+
 ## 테스트
 
 ```bash

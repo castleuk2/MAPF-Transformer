@@ -189,7 +189,7 @@ class AgentTokenizer(nn.Module):
             "slot_ids", torch.arange(config.agents_per_frame, dtype=torch.long), persistent=False
         )
 
-    def forward(
+    def component_embeddings(
         self,
         agent_x: torch.Tensor,
         agent_y: torch.Tensor,
@@ -198,7 +198,7 @@ class AgentTokenizer(nn.Module):
         one_hop_ctg: torch.Tensor | None,
         valid: torch.Tensor,
         track_reset: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> dict[str, torch.Tensor]:
         if agent_x.ndim != 2:
             raise ValueError("agent fields must have shape [N, agents_per_frame]")
         n, agents = agent_x.shape
@@ -214,7 +214,7 @@ class AgentTokenizer(nn.Module):
         flexibility = self.flexibility_embedding(mask.sum(dim=-1).long().clamp(0, 4))
         distance_emb = self.distance_embedding(distance.long().clamp(0, 63))
 
-        ctg = 0.0
+        ctg = torch.zeros_like(x)
         if self.one_hop_ctg_embeddings is not None:
             if one_hop_ctg is None:
                 raise ValueError("one_hop_ctg is required when config.one_hop_ctg is enabled")
@@ -230,11 +230,79 @@ class AgentTokenizer(nn.Module):
         validity = self.validity_embedding(valid.long())
         reset = self.track_reset_embedding(track_reset.long())
 
-        state = x + y + direction + flexibility + distance_emb + ctg + role + slot + validity + reset
+        return {
+            "x": x, "y": y, "direction": direction, "flexibility": flexibility,
+            "distance": distance_emb, "ctg": ctg, "role": role, "slot": slot,
+            "validity": validity, "reset": reset,
+        }
+
+    def forward(
+        self,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+        action_mask: torch.Tensor,
+        distance: torch.Tensor,
+        one_hop_ctg: torch.Tensor | None,
+        valid: torch.Tensor,
+        track_reset: torch.Tensor,
+    ) -> torch.Tensor:
+        components = self.component_embeddings(
+            agent_x, agent_y, action_mask, distance, one_hop_ctg, valid, track_reset
+        )
+        state = sum(components.values())
         projected = self.projection(self.pre_projection_norm(state + self.agent_modality))
         token = self.output_norm(state + projected)
         # Empty slots retain metadata (slot/time), but their physical content is suppressed later by validity.
         return token
+
+
+class GroupedAgentTokenizer(AgentTokenizer):
+    """Preserves geometry, navigation and tracking information before gated fusion."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__(config)
+        d = config.d_model
+        self.geometry_projection = nn.Sequential(
+            nn.LayerNorm(2 * d), nn.Linear(2 * d, d), nn.GELU(), nn.Dropout(config.dropout)
+        )
+        self.navigation_projection = nn.Sequential(
+            nn.LayerNorm(4 * d), nn.Linear(4 * d, d), nn.GELU(), nn.Dropout(config.dropout)
+        )
+        self.tracking_projection = nn.Sequential(
+            nn.LayerNorm(4 * d), nn.Linear(4 * d, d), nn.GELU(), nn.Dropout(config.dropout)
+        )
+        self.group_gate = nn.Linear(3 * d, 3)
+        self.group_projection = nn.Sequential(
+            nn.LayerNorm(d), nn.Linear(d, d), nn.GELU(), nn.Dropout(config.dropout),
+            nn.Linear(d, d),
+        )
+
+    def forward(
+        self,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+        action_mask: torch.Tensor,
+        distance: torch.Tensor,
+        one_hop_ctg: torch.Tensor | None,
+        valid: torch.Tensor,
+        track_reset: torch.Tensor,
+    ) -> torch.Tensor:
+        c = self.component_embeddings(
+            agent_x, agent_y, action_mask, distance, one_hop_ctg, valid, track_reset
+        )
+        geometry = self.geometry_projection(torch.cat([c["x"], c["y"]], dim=-1))
+        navigation = self.navigation_projection(torch.cat(
+            [c["direction"], c["flexibility"], c["distance"], c["ctg"]], dim=-1
+        ))
+        tracking = self.tracking_projection(torch.cat(
+            [c["role"], c["slot"], c["validity"], c["reset"]], dim=-1
+        ))
+        groups = torch.stack([geometry, navigation, tracking], dim=-2)
+        gates = torch.softmax(
+            self.group_gate(torch.cat([geometry, navigation, tracking], dim=-1)), dim=-1
+        )
+        state = (groups * gates.unsqueeze(-1)).sum(dim=-2) + self.agent_modality
+        return self.output_norm(state + self.group_projection(state))
 
 
 class AgentMapFusion(nn.Module):
@@ -263,6 +331,94 @@ class AgentMapFusion(nn.Module):
         x = agent_tokens + attended
         x = x + self.ff(self.ff_norm(x))
         return self.output_norm(x)
+
+
+class EdgeAwareGraphBlock(nn.Module):
+    """Within-frame agent graph attention with geometric and conflict edge bias."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        d, h = config.d_model, config.n_heads
+        self.num_heads = h
+        self.head_dim = d // h
+        self.scale = self.head_dim ** -0.5
+        self.norm1 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.output = nn.Linear(d, d)
+        self.dropout = nn.Dropout(config.dropout)
+        self.relative_x = nn.Embedding(29, d)
+        self.relative_y = nn.Embedding(29, d)
+        self.manhattan = nn.Embedding(29, d)
+        self.vertex_conflict = nn.Embedding(2, d)
+        self.swap_conflict = nn.Embedding(2, d)
+        self.edge_norm = nn.LayerNorm(d)
+        self.edge_bias = nn.Linear(d, h, bias=False)
+        self.norm2 = nn.LayerNorm(d)
+        self.ff = FeedForward(d, config.mlp_ratio, config.dropout)
+        self.register_buffer(
+            "moves", torch.tensor([[-1, 0], [1, 0], [0, -1], [0, 1]]),
+            persistent=False,
+        )
+
+    def _edge_embeddings(
+        self,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        positions = torch.stack([agent_x, agent_y], dim=-1).long()
+        relative = positions.unsqueeze(1) - positions.unsqueeze(2)  # source j - query i
+        dx = relative[..., 0].clamp(-14, 14) + 14
+        dy = relative[..., 1].clamp(-14, 14) + 14
+        distance = relative.abs().sum(dim=-1).clamp(0, 28)
+
+        candidates = positions.unsqueeze(2) + self.moves.view(1, 1, 4, 2)
+        allowed = action_mask.bool()
+        same_destination = (
+            candidates.unsqueeze(2).unsqueeze(4)
+            == candidates.unsqueeze(1).unsqueeze(3)
+        ).all(dim=-1)
+        allowed_pairs = allowed.unsqueeze(2).unsqueeze(4) & allowed.unsqueeze(1).unsqueeze(3)
+        vertex = (same_destination & allowed_pairs).any(dim=(-1, -2)).long()
+
+        candidate_i_is_j = (
+            candidates.unsqueeze(2) == positions.unsqueeze(1).unsqueeze(3)
+        ).all(dim=-1)
+        candidate_j_is_i = (
+            candidates.unsqueeze(1) == positions.unsqueeze(2).unsqueeze(3)
+        ).all(dim=-1)
+        swap = (
+            (candidate_i_is_j & allowed.unsqueeze(2)).any(dim=-1)
+            & (candidate_j_is_i & allowed.unsqueeze(1)).any(dim=-1)
+        ).long()
+        return self.edge_norm(
+            self.relative_x(dx) + self.relative_y(dy) + self.manhattan(distance)
+            + self.vertex_conflict(vertex) + self.swap_conflict(swap)
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+        action_mask: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> torch.Tensor:
+        batch, agents, d = x.shape
+        normalized = self.norm1(x)
+        qkv = self.qkv(normalized).reshape(batch, agents, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)
+        logits = torch.einsum("bihd,bjhd->bhij", q, k) * self.scale
+        edges = self._edge_embeddings(agent_x, agent_y, action_mask)
+        logits = logits + self.edge_bias(edges).permute(0, 3, 1, 2)
+        logits = logits.masked_fill(~valid[:, None, None, :].bool(), float("-inf"))
+        logits = torch.where(valid[:, None, :, None].bool(), logits, torch.zeros_like(logits))
+        weights = torch.softmax(logits, dim=-1)
+        weights = weights * valid[:, None, :, None] * valid[:, None, None, :]
+        attended = torch.einsum("bhij,bjhd->bihd", weights, v).reshape(batch, agents, d)
+        x = x + self.dropout(self.output(attended))
+        x = x + self.ff(self.norm2(x))
+        return x * valid.unsqueeze(-1).to(x.dtype)
 
 
 class TransitionTokenizer(nn.Module):
@@ -336,8 +492,15 @@ class MAPFTransformer(nn.Module):
         config.validate()
         self.config = config
         self.map_encoder = SpatialMapEncoder(config)
-        self.agent_tokenizer = AgentTokenizer(config)
+        self.agent_tokenizer = (
+            GroupedAgentTokenizer(config)
+            if config.metadata_encoder == "grouped"
+            else AgentTokenizer(config)
+        )
         self.agent_map_fusion = AgentMapFusion(config)
+        self.graph_blocks = nn.ModuleList(
+            [EdgeAwareGraphBlock(config) for _ in range(config.graph_layers)]
+        )
         self.transition_tokenizer = TransitionTokenizer(config)
 
         self.frame_position = nn.Embedding(config.history_frames, config.d_model)
@@ -403,6 +566,14 @@ class MAPFTransformer(nn.Module):
             track_reset,
         )
         conditioned_agents = self.agent_map_fusion(agents, map_latents)
+        for graph_block in self.graph_blocks:
+            conditioned_agents = graph_block(
+                conditioned_agents,
+                agent_x,
+                agent_y,
+                action_mask,
+                agent_valid,
+            )
         # Suppress invalid physical slots after metadata/fusion while retaining stable shape.
         conditioned_agents = conditioned_agents * agent_valid.unsqueeze(-1).to(conditioned_agents.dtype)
         transition = self.transition_tokenizer(

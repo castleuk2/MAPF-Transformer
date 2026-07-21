@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 from mapf_transformer.config import ModelConfig
 from mapf_transformer.dataset import SequenceSampleBuilder
@@ -79,3 +80,38 @@ def test_one_hop_ctg_is_optional_and_does_not_change_token_count():
     output = model(batch)
     assert output.logits.shape == (1, config.num_actions)
     assert model.agent_tokenizer.one_hop_ctg_embeddings is not None
+
+
+@pytest.mark.parametrize(
+    ("metadata_encoder", "graph_attention", "graph_layers"),
+    [("grouped", False, 0), ("baseline", True, 1), ("grouped", True, 1)],
+)
+def test_metadata_and_graph_ablation_variants(
+    metadata_encoder, graph_attention, graph_layers
+):
+    config = ModelConfig(
+        d_model=32,
+        n_heads=4,
+        temporal_layers=1,
+        spatial_latent_layers=1,
+        map_latents=4,
+        dropout=0.0,
+        mlp_ratio=2,
+        metadata_encoder=metadata_encoder,
+        graph_attention=graph_attention,
+        graph_layers=graph_layers,
+    )
+    episode = generate_synthetic_episode(seed=11, num_agents=3, max_steps=4)
+    sample = SequenceSampleBuilder(config).build(episode, ego_id=0, time_step=0)
+    batch = {key: value.unsqueeze(0) for key, value in sample.items()}
+    model = MAPFTransformer(config)
+    frames, _ = model.encode_frames(batch)
+    assert frames.shape == (
+        1, config.history_frames, config.tokens_per_frame, config.d_model
+    )
+    output = model(batch)
+    assert output.logits.shape == (1, config.num_actions)
+    assert torch.isfinite(output.loss)
+    output.loss.backward()
+    if graph_attention:
+        assert model.graph_blocks[0].edge_bias.weight.grad is not None
