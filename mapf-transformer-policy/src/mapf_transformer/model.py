@@ -262,6 +262,10 @@ class GroupedAgentTokenizer(AgentTokenizer):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__(config)
         d = config.d_model
+        # The grouped path replaces the baseline sum/projection path. Remove
+        # its trainable modules so DDP does not see permanently unused parameters.
+        self.pre_projection_norm = nn.Identity()
+        self.projection = nn.Identity()
         self.geometry_projection = nn.Sequential(
             nn.LayerNorm(2 * d), nn.Linear(2 * d, d), nn.GELU(), nn.Dropout(config.dropout)
         )

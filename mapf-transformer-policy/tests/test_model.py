@@ -115,3 +115,6 @@ def test_metadata_and_graph_ablation_variants(
     output.loss.backward()
     if graph_attention:
         assert model.graph_blocks[0].edge_bias.weight.grad is not None
+    if metadata_encoder == "grouped":
+        unused = [name for name, parameter in model.named_parameters() if parameter.grad is None]
+        assert unused == []
