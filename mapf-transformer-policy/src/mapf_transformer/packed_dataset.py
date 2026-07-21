@@ -200,13 +200,19 @@ class PackedEpisodeSequenceDataset(EpisodeSequenceDataset):
             expected = {
                 "map_size": self.config.map_size,
                 "max_neighbors": self.config.max_neighbors,
-                "one_hop_ctg": self.config.one_hop_ctg,
             }
             for key, value in expected.items():
                 if metadata.get(key) != value:
                     raise ValueError(
                         f"Packed cache {key}={metadata.get(key)!r} does not match model {value!r}"
                     )
+            # A CTG-rich cache is a lossless superset and may be used by a
+            # CTG-disabled model, which simply omits that field from samples.
+            # The reverse is impossible because missing CTG cannot be restored.
+            if self.config.one_hop_ctg and not bool(metadata.get("one_hop_ctg", False)):
+                raise ValueError(
+                    "Model requires one_hop_ctg but the packed cache does not contain it"
+                )
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         episode_index, time_step, ego_id = self._resolve_index(index)

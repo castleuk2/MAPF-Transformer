@@ -106,3 +106,25 @@ def test_packed_manifest_records_format_metadata(tmp_path):
         "one_hop_ctg": False,
     }
     assert len(packed) > 0
+
+
+def test_ctg_rich_cache_can_be_read_by_ctg_disabled_model(tmp_path):
+    ctg_config, _, _ = make_datasets(tmp_path, one_hop_ctg=True)
+    plain_config = ModelConfig(
+        d_model=ctg_config.d_model,
+        n_heads=ctg_config.n_heads,
+        temporal_layers=ctg_config.temporal_layers,
+        map_latents=ctg_config.map_latents,
+        one_hop_ctg=False,
+    )
+    raw = EpisodeSequenceDataset(
+        tmp_path / "raw_manifest.jsonl", plain_config, goal_wait_keep_ratio=0.2
+    )
+    packed = PackedEpisodeSequenceDataset(
+        tmp_path / "packed_manifest.jsonl", plain_config, goal_wait_keep_ratio=0.2
+    )
+    original = raw[1]
+    restored = unpack_packed_batch(packed[1], plain_config)
+    assert "one_hop_ctg" not in restored
+    for key in original.keys() - {"one_hop_ctg"}:
+        torch.testing.assert_close(restored[key], original[key], rtol=0, atol=0)
