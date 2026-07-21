@@ -378,6 +378,13 @@ PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
   --workers 24
 ```
 
+Effective-batch-2048 비교에서는 기존 baseline도 다시 학습합니다. 2 GPU에서
+baseline/metadata 모델은 `batch_size=1024`, global accumulation 2를 사용하고,
+graph 모델은 추가 activation을 고려해 `batch_size=256`, global accumulation 8을
+사용합니다. 두 경우 모두 global effective batch는 2048입니다.
+기존 effective-batch-256 실험과 sample 기준 scheduler를 맞추기 위해 warmup,
+validation, checkpoint step 간격을 1/8로 조정했습니다.
+
 예를 들어 Experiment 1의 2-GPU 학습은 다음과 같습니다.
 
 ```bash

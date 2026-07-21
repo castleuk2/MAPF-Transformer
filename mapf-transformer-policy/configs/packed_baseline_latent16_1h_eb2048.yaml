@@ -1,11 +1,11 @@
-# Packed-cache Experiment 2: baseline metadata + one graph-attention layer.
+# Re-trained reference baseline for the effective-batch-2048 experiment family.
 model:
   map_size: 15
   map_latents: 16
   one_hop_ctg: false
   metadata_encoder: baseline
-  graph_attention: true
-  graph_layers: 1
+  graph_attention: false
+  graph_layers: 0
   max_neighbors: 15
   history_frames: 15
   d_model: 256
@@ -21,10 +21,10 @@ training:
   dataset_format: packed
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/train/manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/val/manifest.jsonl
-  output_dir: mapf-transformer-policy/runs/packed_experiment2_graph_attention_l1
-  batch_size: 256
+  output_dir: mapf-transformer-policy/runs/packed_baseline_latent16_1h_eb2048
+  batch_size: 1024
   val_batch_size: 256
-  gradient_accumulation_steps: 8
+  gradient_accumulation_steps: 2
   epochs: 3
   learning_rate: 0.0003
   min_learning_rate: 0.00003

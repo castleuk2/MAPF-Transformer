@@ -22,13 +22,13 @@ training:
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/train/manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/val/manifest.jsonl
   output_dir: mapf-transformer-policy/runs/packed_experiment1_grouped_metadata
-  batch_size: 64
-  val_batch_size: 128
-  gradient_accumulation_steps: 4
+  batch_size: 1024
+  val_batch_size: 256
+  gradient_accumulation_steps: 2
   epochs: 3
   learning_rate: 0.0003
   min_learning_rate: 0.00003
-  warmup_steps: 2000
+  warmup_steps: 250
   weight_decay: 0.1
   beta1: 0.9
   beta2: 0.95
@@ -37,8 +37,8 @@ training:
   device: auto
   amp: true
   log_every: 20
-  validate_every: 2000
-  save_every: 5000
+  validate_every: 250
+  save_every: 625
   history_augmentation: true
   min_history_frames: 1
   goal_wait_keep_ratio: 0.2
