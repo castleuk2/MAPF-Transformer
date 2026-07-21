@@ -22,9 +22,9 @@ training:
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/train/manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h_packed/val/manifest.jsonl
   output_dir: mapf-transformer-policy/runs/packed_experiment1_grouped_metadata
-  batch_size: 1024
+  batch_size: 256
   val_batch_size: 256
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 8
   epochs: 3
   learning_rate: 0.0003
   min_learning_rate: 0.00003
