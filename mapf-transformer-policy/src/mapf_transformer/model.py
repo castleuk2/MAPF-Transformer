@@ -337,6 +337,45 @@ class AgentMapFusion(nn.Module):
         return self.output_norm(x)
 
 
+class MapAgentUpdate(nn.Module):
+    """Builds policy-only dynamic map latents from map-conditioned agent tokens."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        d = config.d_model
+        self.map_norm = nn.LayerNorm(d)
+        self.agent_norm = nn.LayerNorm(d)
+        self.cross_attention = nn.MultiheadAttention(
+            d,
+            config.n_heads,
+            dropout=config.dropout,
+            batch_first=True,
+        )
+        # Start close to the static-map path and learn how much dynamic occupancy
+        # information should enter the policy representation.
+        self.gate_logit = nn.Parameter(torch.tensor(-2.0))
+        self.ff_norm = nn.LayerNorm(d)
+        self.ff = FeedForward(d, config.mlp_ratio, config.dropout)
+        self.output_norm = nn.LayerNorm(d)
+
+    def forward(
+        self,
+        map_latents: torch.Tensor,
+        agent_tokens: torch.Tensor,
+        agent_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        attended, _ = self.cross_attention(
+            self.map_norm(map_latents),
+            self.agent_norm(agent_tokens),
+            self.agent_norm(agent_tokens),
+            key_padding_mask=~agent_valid.bool(),
+            need_weights=False,
+        )
+        delta = attended + self.ff(self.ff_norm(map_latents + attended))
+        dynamic = map_latents + torch.sigmoid(self.gate_logit) * delta
+        return self.output_norm(dynamic)
+
+
 class EdgeAwareGraphBlock(nn.Module):
     """Within-frame agent graph attention with geometric and conflict edge bias."""
 
@@ -502,6 +541,12 @@ class MAPFTransformer(nn.Module):
             else AgentTokenizer(config)
         )
         self.agent_map_fusion = AgentMapFusion(config)
+        self.map_agent_update = (
+            MapAgentUpdate(config) if config.bidirectional_map_agent else None
+        )
+        self.dynamic_agent_map_fusion = (
+            AgentMapFusion(config) if config.bidirectional_map_agent else None
+        )
         self.graph_blocks = nn.ModuleList(
             [EdgeAwareGraphBlock(config) for _ in range(config.graph_layers)]
         )
@@ -577,6 +622,16 @@ class MAPFTransformer(nn.Module):
                 agent_y,
                 action_mask,
                 agent_valid,
+            )
+        if self.map_agent_update is not None:
+            dynamic_map_latents = self.map_agent_update(
+                map_latents,
+                conditioned_agents,
+                agent_valid,
+            )
+            conditioned_agents = self.dynamic_agent_map_fusion(
+                conditioned_agents,
+                dynamic_map_latents,
             )
         # Suppress invalid physical slots after metadata/fusion while retaining stable shape.
         conditioned_agents = conditioned_agents * agent_valid.unsqueeze(-1).to(conditioned_agents.dtype)

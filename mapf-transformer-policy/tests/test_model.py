@@ -83,11 +83,17 @@ def test_one_hop_ctg_is_optional_and_does_not_change_token_count():
 
 
 @pytest.mark.parametrize(
-    ("metadata_encoder", "graph_attention", "graph_layers"),
-    [("grouped", False, 0), ("baseline", True, 1), ("grouped", True, 1)],
+    ("metadata_encoder", "bidirectional_map_agent", "graph_attention", "graph_layers"),
+    [
+        ("grouped", False, False, 0),
+        ("baseline", False, True, 1),
+        ("grouped", False, True, 1),
+        ("grouped", True, False, 0),
+        ("grouped", True, True, 1),
+    ],
 )
 def test_metadata_and_graph_ablation_variants(
-    metadata_encoder, graph_attention, graph_layers
+    metadata_encoder, bidirectional_map_agent, graph_attention, graph_layers
 ):
     config = ModelConfig(
         d_model=32,
@@ -98,6 +104,7 @@ def test_metadata_and_graph_ablation_variants(
         dropout=0.0,
         mlp_ratio=2,
         metadata_encoder=metadata_encoder,
+        bidirectional_map_agent=bidirectional_map_agent,
         graph_attention=graph_attention,
         graph_layers=graph_layers,
     )
@@ -115,6 +122,9 @@ def test_metadata_and_graph_ablation_variants(
     output.loss.backward()
     if graph_attention:
         assert model.graph_blocks[0].edge_bias.weight.grad is not None
+    if bidirectional_map_agent:
+        assert model.map_agent_update.gate_logit.grad is not None
+        assert model.dynamic_agent_map_fusion.cross_attention.in_proj_weight.grad is not None
     if metadata_encoder == "grouped":
         unused = [name for name, parameter in model.named_parameters() if parameter.grad is None]
         assert unused == []

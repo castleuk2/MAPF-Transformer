@@ -19,6 +19,7 @@ class ModelConfig:
     map_latents: int = 16
     one_hop_ctg: bool = False
     metadata_encoder: str = "baseline"
+    bidirectional_map_agent: bool = False
     graph_attention: bool = False
     graph_layers: int = 0
     max_neighbors: int = 15
