@@ -140,6 +140,9 @@ latent.
 - `agent_query_map32_agent32_raw_1h.yaml`: 25 real agent latents plus seven
   learned interaction latents; context is
   `8 * (32 + 1 transition) + 1 ACT = 265`.
+- `agent_query_map32_agent32_history5_raw_1h.yaml`: the same 25 real agent
+  latents plus seven learned interaction latents, with five history frames;
+  context is `5 * (32 + 1 transition) + 1 ACT = 166`.
 
 Run either configuration with two GPUs:
 
@@ -156,7 +159,13 @@ torchrun --standalone --nproc_per_node=2 \
 ```
 
 Replace `CONFIG` with `agent_query_map32_agent32_raw_1h` for the seven
-interaction-latent condition.
+interaction-latent condition, or with
+`agent_query_map32_agent32_history5_raw_1h` for the five-frame condition.
+
+The controlled comparisons are:
+
+- Agent25/history8 versus Agent32/history8: effect of seven interaction latents.
+- Agent32/history8 versus Agent32/history5: effect of temporal history length.
 
 Important outputs:
 
