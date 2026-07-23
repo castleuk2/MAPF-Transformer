@@ -46,7 +46,7 @@ smoke-test fallback.
 
 - Main policy unit/integration tests.
 - Spatial memory incremental-update equivalence against full 15×15 cropping.
-- Multi-hot shortest-path action mask and 18-bit payload round-trip.
+- Eight-field agent-local encoding, 25 stable entities, and seven interaction latents.
 - Initial-history PAD behavior.
 - Model forward/backward pass.
 - Stateful `act`/`reset_states` inference wrapper.

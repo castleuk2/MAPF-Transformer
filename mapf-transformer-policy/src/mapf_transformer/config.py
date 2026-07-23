@@ -11,15 +11,18 @@ import yaml
 class ModelConfig:
     """Architecture and input-layout configuration.
 
-    The default layout is intentionally exact:
-    15 frames * (16 agents + 1 transition) + 1 ACT query = 256 tokens.
+    Default temporal layout:
+    8 frames * (32 agent-set tokens + 1 transition) + 1 ACT query = 265 tokens.
     """
 
     map_size: int = 15
     map_latents: int = 16
-    one_hop_ctg: bool = False
-    max_neighbors: int = 15
-    history_frames: int = 15
+    one_hop_ctg: bool = True
+    max_neighbors: int = 24
+    agent_latents: int = 32
+    agent_local_layers: int = 1
+    agent_set_layers: int = 1
+    history_frames: int = 8
     d_model: int = 256
     n_heads: int = 8
     temporal_layers: int = 8
@@ -38,7 +41,11 @@ class ModelConfig:
 
     @property
     def tokens_per_frame(self) -> int:
-        return self.agents_per_frame + 1
+        return self.agent_latents + 1
+
+    @property
+    def interaction_latents(self) -> int:
+        return self.agent_latents - self.agents_per_frame
 
     @property
     def context_tokens(self) -> int:
@@ -57,17 +64,20 @@ class ModelConfig:
             raise ValueError("map_size must be a positive odd number so Ego has a center cell")
         if self.map_latents <= 0:
             raise ValueError("map_latents must be positive")
+        if not self.one_hop_ctg:
+            raise ValueError(
+                "The simplified Agent Metadata architecture requires one_hop_ctg=true"
+            )
         if self.max_neighbors < 0:
             raise ValueError("max_neighbors must be non-negative")
+        if self.agent_latents < self.agents_per_frame:
+            raise ValueError("agent_latents must be at least agents_per_frame")
+        if self.agent_local_layers <= 0 or self.agent_set_layers <= 0:
+            raise ValueError("agent_local_layers and agent_set_layers must be positive")
         if self.history_frames <= 0:
             raise ValueError("history_frames must be positive")
         if self.d_model % self.n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads")
-        if self.context_tokens != 256:
-            raise ValueError(
-                "The reference architecture requires exactly 256 context tokens; "
-                f"received {self.context_tokens}. Adjust history_frames/max_neighbors."
-            )
         if self.distance_buckets != 64:
             raise ValueError("The 6-bit distance field requires 64 buckets")
         if self.num_actions != 5:

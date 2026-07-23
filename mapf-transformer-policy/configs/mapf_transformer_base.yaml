@@ -2,8 +2,11 @@
 model:
   map_size: 15
   map_latents: 16
-  max_neighbors: 15
-  history_frames: 15
+  max_neighbors: 24
+  agent_latents: 32
+  agent_local_layers: 1
+  agent_set_layers: 1
+  history_frames: 8
   d_model: 256
   n_heads: 8
   temporal_layers: 8

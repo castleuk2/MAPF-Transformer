@@ -1,10 +1,13 @@
-# One-hop CTG ablation: only one_hop_ctg differs from the controlled baseline.
+# Compatibility config: one-hop CTG is mandatory in the simplified metadata baseline.
 model:
   map_size: 15
   map_latents: 16
   one_hop_ctg: true
-  max_neighbors: 15
-  history_frames: 15
+  max_neighbors: 24
+  agent_latents: 32
+  agent_local_layers: 1
+  agent_set_layers: 1
+  history_frames: 8
   d_model: 256
   n_heads: 8
   temporal_layers: 8

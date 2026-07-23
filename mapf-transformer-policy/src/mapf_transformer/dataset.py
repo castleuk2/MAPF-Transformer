@@ -204,7 +204,10 @@ class SequenceSampleBuilder:
         ego_id: int,
         tracker: StableNeighborTracker,
     ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
-        if episode.neighbor_ids is not None:
+        if (
+            episode.neighbor_ids is not None
+            and episode.neighbor_ids.shape[-1] == self.config.max_neighbors
+        ):
             ids = episode.neighbor_ids[frame, ego_id]
             valid = (
                 episode.neighbor_valid[frame, ego_id]
@@ -217,6 +220,8 @@ class SequenceSampleBuilder:
                 else np.zeros(self.config.max_neighbors, dtype=bool)
             )
             return ids, valid, reset
+        # Old trajectories can contain precomputed slots with another width
+        # (e.g. 15). Recompute 24 stable slots from the stored full positions.
         return None, None, None
 
     def build(

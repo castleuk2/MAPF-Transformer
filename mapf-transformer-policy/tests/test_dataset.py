@@ -18,10 +18,22 @@ def test_initial_history_is_padded_without_separate_dataset():
 
     first = builder.build(episode, ego_id=0, time_step=0)
     assert first["frame_valid"].sum().item() == 1
-    assert first["local_maps"].shape == (15, 15, 15)
-    assert first["agent_x"].shape == (15, 16)
-    assert first["action_mask"].shape == (15, 16, 4)
-    assert first["one_hop_ctg"].shape == (15, 16, 5)
+    assert first["local_maps"].shape == (
+        config.history_frames,
+        config.map_size,
+        config.map_size,
+    )
+    assert first["agent_x"].shape == (config.history_frames, config.agents_per_frame)
+    assert first["action_mask"].shape == (
+        config.history_frames,
+        config.agents_per_frame,
+        4,
+    )
+    assert first["one_hop_ctg"].shape == (
+        config.history_frames,
+        config.agents_per_frame,
+        5,
+    )
 
     later_time = min(2, episode.time_steps - 1)
     later = builder.build(episode, ego_id=0, time_step=later_time)

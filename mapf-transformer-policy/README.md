@@ -11,15 +11,19 @@ policy. It keeps the public policy wrapper close to MAPF-GPT (`act`,
   WAIT or failed movement reuses the map representation.
 - 225 one-cell tokens are compressed by cell-to-latent cross-attention into
   **16 learned map latent tokens**.
-- Ego + up to 15 neighbors use one token each.
-- Physical agent payload is **18 bits**: local X(4), local Y(4), multi-hot
-  shortest-path action mask(4), 4-hop distance bucket(6).
-- Role, stable tracking slot, validity and track-reset are metadata embeddings;
-  they do not consume payload bits.
-- Agent tokens query map latents through agent-to-map cross-attention.
-- 16 conditioned agent tokens + one transition token = **17 tokens/frame**.
-- 15 frames = 255 tokens; one `[ACT]` query makes the temporal context exactly
-  **256 tokens**.
+- Ego + up to 24 neighbors are represented as 25 stable local entities.
+- Every entity starts from **8 typed field tokens**: stable local slot, local X,
+  local Y, directional one-hop CTG (`UP/DOWN/LEFT/RIGHT`), and quantized goal
+  distance. A shared agent-local encoder reduces those fields to one entity
+  token without mixing different agents.
+- The 25 entity tokens query map latents through agent-to-map cross-attention.
+- Seven learned interaction latents are appended, then agent-set self-attention
+  jointly processes the 25 identity-preserving entity positions and seven
+  relationship positions, producing **32 agent tokens/frame**.
+- Validity is an attention/padding mask rather than a field token. Track reset
+  is a structural embedding broadcast over that agent's eight fields.
+- 32 agent tokens + one transition token = **33 tokens/frame**.
+- Eight frames = 264 tokens; one `[ACT]` query makes **265 temporal tokens**.
 - The action head follows POGEMA order: `WAIT, UP, DOWN, LEFT, RIGHT`.
 
 The model is a hierarchical spatial encoder + temporal policy Transformer. It is
@@ -52,10 +56,11 @@ Each `.npz` episode contains:
   dataset exposes only actions before this boundary, so its episode sample
   count is SoC rather than `T*N`.
 - optional `neighbor_ids`, `neighbor_valid`, `track_reset` with shape
-  `[T+1,N,15]`.
+  `[T+1,N,K]`. If `K` differs from the configured 24-neighbor layout, slots are
+  recomputed from the stored full positions.
 
 A JSONL manifest points to episode files. One supervised item is
-`(episode, ego agent, time step)`. The loader constructs the latest 15 frames;
+`(episode, ego agent, time step)`. The loader constructs the latest eight frames;
 missing initial history is represented by invalid PAD frames, so no separate
 "initial-history" dataset is required. History-length augmentation randomly
 shortens otherwise complete windows during training.
@@ -66,14 +71,15 @@ encoders without regenerating expert trajectories.
 
 ## Training
 
-The base 256-dimensional configuration has about **8.8M total parameters**; the spatial encoder and fusion modules make it larger than MAPF-GPT-6M even though its temporal backbone is of a similar scale.
+The default embedding width is 256. The exact parameter count depends on the
+map-latent, agent-local, agent-set, and temporal-layer configuration.
 
 
 ```bash
 python train.py --config configs/mapf_transformer_base.yaml
 ```
 
-For the one-hour dataset, use `torchrun` with the unchanged 8.81M base model.
+For the one-hour dataset, use `torchrun` with the configured model.
 Run from the workspace root. One GPU:
 
 ```bash
@@ -103,6 +109,24 @@ torchrun --standalone --nproc_per_node=2 mapf-transformer-policy/train.py \
 
 Rank 0 also writes structured train/validation/checkpoint events to
 `metrics.jsonl` automatically.
+
+### Eight-field raw-trajectory experiment
+
+The 25-entity/7-interaction-latent model reads the existing raw MAPF-LNS2
+trajectories directly. It recomputes the 24 stable neighbor slots and eight
+history frames at load time; no packed cache or regenerated expert trajectory
+is required.
+
+```bash
+mkdir -p mapf-transformer-policy/runs/agent_field8_raw_1h
+set -o pipefail
+CUDA_VISIBLE_DEVICES=0,1 \
+PYTHONPATH=mapf-transformer-policy/src \
+torchrun --standalone --nproc_per_node=2 \
+  mapf-transformer-policy/train.py \
+  --config mapf-transformer-policy/configs/agent_field8_raw_1h.yaml \
+  2>&1 | tee mapf-transformer-policy/runs/agent_field8_raw_1h/console.log
+```
 
 Important outputs:
 
@@ -140,10 +164,10 @@ project provides the environment adapter and dataset generator.
 
 - The map buffer is updated from **actual displacement**, never merely from the
   commanded action.
-- The four-bit route mask contains every cardinal move whose neighbor has
-  shortest-path distance `d-1`; it is a soft input prior, not an output hard
-  mask. Waiting or temporarily moving away from a goal remains possible.
-- When there are fewer than 15 visible neighbors, invalid stable slots remain
-  explicit. A slot reassignment receives a track-reset embedding.
+- Directional one-hop CTG categorizes whether each movement decreases, preserves,
+  or increases cost-to-go, or is blocked/unreachable. It is an input feature,
+  not an output hard mask.
+- When there are fewer than 24 visible neighbors, invalid stable slots retain
+  the fixed tensor layout but are suppressed by the validity mask.
 - Map reconstruction is an optional training-only auxiliary loss that helps the
   16 latents preserve narrow passages and obstacle boundaries.

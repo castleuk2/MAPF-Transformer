@@ -146,8 +146,8 @@ class SpatialMapEncoder(nn.Module):
         return latents, reconstruction_logits
 
 
-class AgentTokenizer(nn.Module):
-    """Embeds the 18-bit physical payload and non-payload metadata."""
+class AgentLocalEncoder(nn.Module):
+    """Encodes eight typed fields independently for every stable agent slot."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -155,36 +155,21 @@ class AgentTokenizer(nn.Module):
         d = config.d_model
         self.x_embedding = nn.Embedding(16, d)
         self.y_embedding = nn.Embedding(16, d)
-        self.direction_embedding = nn.Parameter(torch.empty(4, d))
-        nn.init.normal_(self.direction_embedding, std=0.02)
-        self.flexibility_embedding = nn.Embedding(5, d)
         self.distance_embedding = nn.Embedding(config.distance_buckets, d)
-        self.one_hop_ctg_embeddings = (
-            nn.ModuleList(
-                [nn.Embedding(ONE_HOP_CTG_STATES, d) for _ in range(config.num_actions)]
-            )
-            if config.one_hop_ctg
-            else None
+        # WAIT is intentionally omitted: UP, DOWN, LEFT, RIGHT are four fields.
+        self.one_hop_ctg_embeddings = nn.ModuleList(
+            [nn.Embedding(ONE_HOP_CTG_STATES, d) for _ in range(4)]
         )
-
-        # Metadata embeddings do not consume payload bits.
-        self.role_embedding = nn.Embedding(2, d)  # neighbor / ego
+        self.anchor_embedding = nn.Embedding(config.agents_per_frame, d)
         self.slot_embedding = nn.Embedding(config.agents_per_frame, d)
-        self.validity_embedding = nn.Embedding(2, d)
+        self.field_type = nn.Embedding(8, d)
         self.track_reset_embedding = nn.Embedding(2, d)
-        self.agent_modality = nn.Parameter(torch.zeros(1, 1, d))
-        self.pre_projection_norm = nn.LayerNorm(d)
-        self.projection = nn.Sequential(
-            nn.Linear(d, d),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(d, d),
+        self.agent_modality = nn.Parameter(torch.zeros(1, 1, 1, d))
+        self.blocks = nn.ModuleList(
+            [LatentBlock(config) for _ in range(config.agent_local_layers)]
         )
         self.output_norm = nn.LayerNorm(d)
 
-        roles = torch.zeros(config.agents_per_frame, dtype=torch.long)
-        roles[config.ego_slot] = 1
-        self.register_buffer("role_ids", roles, persistent=False)
         self.register_buffer(
             "slot_ids", torch.arange(config.agents_per_frame, dtype=torch.long), persistent=False
         )
@@ -193,10 +178,9 @@ class AgentTokenizer(nn.Module):
         self,
         agent_x: torch.Tensor,
         agent_y: torch.Tensor,
-        action_mask: torch.Tensor,
         distance: torch.Tensor,
-        one_hop_ctg: torch.Tensor | None,
-        valid: torch.Tensor,
+        one_hop_ctg: torch.Tensor,
+        agent_valid: torch.Tensor,
         track_reset: torch.Tensor,
     ) -> torch.Tensor:
         if agent_x.ndim != 2:
@@ -207,34 +191,27 @@ class AgentTokenizer(nn.Module):
 
         x = self.x_embedding(agent_x.long().clamp(0, 15))
         y = self.y_embedding(agent_y.long().clamp(0, 15))
-        mask = action_mask.float().clamp(0, 1)
-        direction_sum = torch.einsum("nad,df->naf", mask, self.direction_embedding)
-        direction_count = mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        direction = direction_sum / direction_count
-        flexibility = self.flexibility_embedding(mask.sum(dim=-1).long().clamp(0, 4))
-        distance_emb = self.distance_embedding(distance.long().clamp(0, 63))
-
-        ctg = 0.0
-        if self.one_hop_ctg_embeddings is not None:
-            if one_hop_ctg is None:
-                raise ValueError("one_hop_ctg is required when config.one_hop_ctg is enabled")
-            if one_hop_ctg.shape != (n, agents, self.config.num_actions):
-                raise ValueError("one_hop_ctg must have shape [N, agents_per_frame, 5]")
-            ctg = sum(
-                embedding(one_hop_ctg[..., action].long().clamp(0, ONE_HOP_CTG_STATES - 1))
-                for action, embedding in enumerate(self.one_hop_ctg_embeddings)
-            ) / self.config.num_actions
-
-        role = self.role_embedding(self.role_ids).unsqueeze(0).expand(n, -1, -1)
-        slot = self.slot_embedding(self.slot_ids).unsqueeze(0).expand(n, -1, -1)
-        validity = self.validity_embedding(valid.long())
-        reset = self.track_reset_embedding(track_reset.long())
-
-        state = x + y + direction + flexibility + distance_emb + ctg + role + slot + validity + reset
-        projected = self.projection(self.pre_projection_norm(state + self.agent_modality))
-        token = self.output_norm(state + projected)
-        # Empty slots retain metadata (slot/time), but their physical content is suppressed later by validity.
-        return token
+        distance_emb = self.distance_embedding(
+            distance.long().clamp(0, self.config.distance_buckets - 1)
+        )
+        if one_hop_ctg.shape != (n, agents, self.config.num_actions):
+            raise ValueError("one_hop_ctg must have shape [N, agents_per_frame, 5]")
+        directional = [
+            embedding(one_hop_ctg[..., action + 1].long().clamp(0, ONE_HOP_CTG_STATES - 1))
+            for action, embedding in enumerate(self.one_hop_ctg_embeddings)
+        ]
+        anchor = self.anchor_embedding(self.slot_ids).unsqueeze(0).expand(n, -1, -1)
+        fields = torch.stack([anchor, x, y, *directional, distance_emb], dim=2)
+        field_ids = torch.arange(8, device=fields.device)
+        slot = self.slot_embedding(self.slot_ids).view(1, agents, 1, -1)
+        reset = self.track_reset_embedding(track_reset.long().clamp(0, 1)).unsqueeze(2)
+        fields = fields + self.field_type(field_ids).view(1, 1, 8, -1)
+        fields = fields + slot + reset + self.agent_modality
+        fields = fields.reshape(n * agents, 8, self.config.d_model)
+        for block in self.blocks:
+            fields = block(fields)
+        entities = self.output_norm(fields[:, 0]).reshape(n, agents, self.config.d_model)
+        return entities.masked_fill(~agent_valid.bool().unsqueeze(-1), 0.0)
 
 
 class AgentMapFusion(nn.Module):
@@ -263,6 +240,63 @@ class AgentMapFusion(nn.Module):
         x = agent_tokens + attended
         x = x + self.ff(self.ff_norm(x))
         return self.output_norm(x)
+
+
+class AgentSetBlock(nn.Module):
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.norm1 = nn.LayerNorm(config.d_model)
+        self.attn = nn.MultiheadAttention(
+            config.d_model,
+            config.n_heads,
+            dropout=config.dropout,
+            batch_first=True,
+        )
+        self.norm2 = nn.LayerNorm(config.d_model)
+        self.ff = FeedForward(config.d_model, config.mlp_ratio, config.dropout)
+
+    def forward(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        normalized = self.norm1(x)
+        attended, _ = self.attn(
+            normalized,
+            normalized,
+            normalized,
+            key_padding_mask=~valid.bool(),
+            need_weights=False,
+        )
+        x = x + attended
+        x = x + self.ff(self.norm2(x))
+        return x.masked_fill(~valid.bool().unsqueeze(-1), 0.0)
+
+
+class AgentInteractionEncoder(nn.Module):
+    """Preserves 25 entity slots and adds learned relationship capacity."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.interaction_queries = nn.Parameter(
+            torch.empty(config.interaction_latents, config.d_model)
+        )
+        nn.init.normal_(self.interaction_queries, std=0.02)
+        self.blocks = nn.ModuleList(
+            [AgentSetBlock(config) for _ in range(config.agent_set_layers)]
+        )
+        self.output_norm = nn.LayerNorm(config.d_model)
+
+    def forward(
+        self, entities: torch.Tensor, entity_valid: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        n = entities.shape[0]
+        interactions = self.interaction_queries.unsqueeze(0).expand(n, -1, -1)
+        interaction_valid = torch.ones(
+            n, self.config.interaction_latents, dtype=torch.bool, device=entities.device
+        )
+        valid = torch.cat([entity_valid.bool(), interaction_valid], dim=1)
+        x = torch.cat([entities, interactions], dim=1)
+        for block in self.blocks:
+            x = block(x, valid)
+        return self.output_norm(x).masked_fill(~valid.unsqueeze(-1), 0.0), valid
 
 
 class TransitionTokenizer(nn.Module):
@@ -336,8 +370,9 @@ class MAPFTransformer(nn.Module):
         config.validate()
         self.config = config
         self.map_encoder = SpatialMapEncoder(config)
-        self.agent_tokenizer = AgentTokenizer(config)
+        self.agent_tokenizer = AgentLocalEncoder(config)
         self.agent_map_fusion = AgentMapFusion(config)
+        self.agent_set_encoder = AgentInteractionEncoder(config)
         self.transition_tokenizer = TransitionTokenizer(config)
 
         self.frame_position = nn.Embedding(config.history_frames, config.d_model)
@@ -383,41 +418,51 @@ class MAPFTransformer(nn.Module):
         map_latents: torch.Tensor,
         agent_x: torch.Tensor,
         agent_y: torch.Tensor,
-        action_mask: torch.Tensor,
         distance: torch.Tensor,
-        one_hop_ctg: torch.Tensor | None,
+        one_hop_ctg: torch.Tensor,
         agent_valid: torch.Tensor,
         track_reset: torch.Tensor,
         previous_action: torch.Tensor,
         actual_move: torch.Tensor,
         outcome: torch.Tensor,
         visible_count: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         agents = self.agent_tokenizer(
             agent_x,
             agent_y,
-            action_mask,
             distance,
             one_hop_ctg,
             agent_valid,
             track_reset,
         )
         conditioned_agents = self.agent_map_fusion(agents, map_latents)
-        # Suppress invalid physical slots after metadata/fusion while retaining stable shape.
-        conditioned_agents = conditioned_agents * agent_valid.unsqueeze(-1).to(conditioned_agents.dtype)
+        conditioned_agents = conditioned_agents.masked_fill(
+            ~agent_valid.bool().unsqueeze(-1), 0.0
+        )
+        agent_set, agent_set_valid = self.agent_set_encoder(
+            conditioned_agents, agent_valid
+        )
         transition = self.transition_tokenizer(
             previous_action,
             actual_move,
             outcome,
             visible_count,
         ).unsqueeze(1)
-        return torch.cat([conditioned_agents, transition], dim=1)
+        frame_tokens = torch.cat([agent_set, transition], dim=1)
+        frame_token_valid = torch.cat(
+            [
+                agent_set_valid,
+                torch.ones(agent_set.shape[0], 1, dtype=torch.bool, device=agent_set.device),
+            ],
+            dim=1,
+        )
+        return frame_tokens, frame_token_valid
 
     def encode_frames(
         self,
         batch: Mapping[str, torch.Tensor],
         return_reconstruction: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         local_maps = batch["local_maps"]
         if local_maps.ndim != 4:
             raise ValueError("local_maps must have shape [B,F,H,W]")
@@ -434,15 +479,12 @@ class MAPFTransformer(nn.Module):
             tensor = batch[name]
             return tensor.reshape(b * f, *tensor.shape[2:])
 
-        frame_tokens = self.encode_frame_from_latents(
+        frame_tokens, frame_token_valid = self.encode_frame_from_latents(
             map_latents=map_latents,
             agent_x=flatten_agent("agent_x"),
             agent_y=flatten_agent("agent_y"),
-            action_mask=flatten_agent("action_mask"),
             distance=flatten_agent("distance"),
-            one_hop_ctg=(
-                flatten_agent("one_hop_ctg") if self.config.one_hop_ctg else None
-            ),
+            one_hop_ctg=flatten_agent("one_hop_ctg"),
             agent_valid=flatten_agent("agent_valid"),
             track_reset=flatten_agent("track_reset"),
             previous_action=batch["previous_action"].reshape(b * f),
@@ -456,6 +498,9 @@ class MAPFTransformer(nn.Module):
             self.config.tokens_per_frame,
             self.config.d_model,
         )
+        frame_token_valid = frame_token_valid.reshape(
+            b, f, self.config.tokens_per_frame
+        )
         if reconstruction is not None:
             reconstruction = reconstruction.reshape(
                 b,
@@ -463,11 +508,12 @@ class MAPFTransformer(nn.Module):
                 self.config.map_size * self.config.map_size,
                 self.config.cell_states,
             )
-        return frame_tokens, reconstruction
+        return frame_tokens, reconstruction, frame_token_valid
 
     def _build_temporal_attention_mask(
         self,
         frame_valid: torch.Tensor,
+        frame_token_valid: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Builds block-causal mask: bidirectional within frame, causal across frames."""
         b, f = frame_valid.shape
@@ -486,8 +532,14 @@ class MAPFTransformer(nn.Module):
         base[:regular_tokens, regular_tokens] = True  # ordinary tokens cannot read ACT
         base[regular_tokens, :] = False  # ACT reads all context and itself
 
+        if frame_token_valid is None:
+            regular_valid = frame_valid.unsqueeze(-1).expand(-1, -1, p)
+        else:
+            if frame_token_valid.shape != (b, f, p):
+                raise ValueError("frame_token_valid must have shape [B,F,P]")
+            regular_valid = frame_token_valid.bool() & frame_valid.bool().unsqueeze(-1)
         token_valid = torch.cat(
-            [frame_valid.repeat_interleave(p, dim=1), torch.ones((b, 1), dtype=torch.bool, device=device)],
+            [regular_valid.reshape(b, -1), torch.ones((b, 1), dtype=torch.bool, device=device)],
             dim=1,
         )
         masks = base.unsqueeze(0).expand(b, -1, -1).clone()
@@ -509,6 +561,7 @@ class MAPFTransformer(nn.Module):
         frame_tokens: torch.Tensor,
         frame_valid: torch.Tensor,
         targets: torch.Tensor | None = None,
+        frame_token_valid: torch.Tensor | None = None,
     ) -> MAPFTransformerOutput:
         if frame_tokens.ndim != 4:
             raise ValueError("frame_tokens must have shape [B,F,P,D]")
@@ -527,7 +580,9 @@ class MAPFTransformer(nn.Module):
         temporal = temporal.reshape(b, f * p, d)
         act = (self.act_query + self.act_modality).expand(b, -1, -1)
         x = torch.cat([temporal, act], dim=1)
-        attention_mask, token_valid = self._build_temporal_attention_mask(frame_valid.bool())
+        attention_mask, token_valid = self._build_temporal_attention_mask(
+            frame_valid.bool(), frame_token_valid
+        )
         x = x.masked_fill(~token_valid.unsqueeze(-1), 0.0)
         for block in self.temporal_blocks:
             x = block(x, attention_mask, token_valid)
@@ -547,11 +602,16 @@ class MAPFTransformer(nn.Module):
         if return_reconstruction is None:
             return_reconstruction = self.training
         need_reconstruction = self.config.aux_map_reconstruction and return_reconstruction
-        frames, reconstruction = self.encode_frames(
+        frames, reconstruction, frame_token_valid = self.encode_frames(
             batch,
             return_reconstruction=need_reconstruction,
         )
-        output = self.forward_encoded_frames(frames, batch["frame_valid"], targets=targets)
+        output = self.forward_encoded_frames(
+            frames,
+            batch["frame_valid"],
+            targets=targets,
+            frame_token_valid=frame_token_valid,
+        )
         output.map_reconstruction_logits = reconstruction
 
         reconstruction_loss = None

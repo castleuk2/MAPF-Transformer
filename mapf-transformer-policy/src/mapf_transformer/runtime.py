@@ -37,6 +37,7 @@ class _EgoRuntimeState:
     memory: EgoSpatialMemory
     tracker: StableNeighborTracker
     encoded_frames: deque[torch.Tensor]
+    encoded_token_valid: deque[torch.Tensor]
     map_latents: torch.Tensor | None = None
 
 
@@ -150,6 +151,7 @@ class MAPFTransformerInference:
                 memory=EgoSpatialMemory(self.model_config.map_size),
                 tracker=StableNeighborTracker(self.model_config.max_neighbors, grace_steps=1),
                 encoded_frames=deque(maxlen=self.model_config.history_frames),
+                encoded_token_valid=deque(maxlen=self.model_config.history_frames),
             )
             for _ in range(num_agents)
         ]
@@ -267,17 +269,12 @@ class MAPFTransformerInference:
         )
         if map_latents.shape[0] != positions.shape[0]:
             raise RuntimeError("Not every Ego spatial memory produced map latents")
-        frame_batch_current = self.model.encode_frame_from_latents(
+        frame_batch_current, token_valid_current = self.model.encode_frame_from_latents(
             map_latents=map_latents,
             agent_x=stack_feature("agent_x", torch.long),
             agent_y=stack_feature("agent_y", torch.long),
-            action_mask=stack_feature("action_mask", torch.float32),
             distance=stack_feature("distance", torch.long),
-            one_hop_ctg=(
-                stack_feature("one_hop_ctg", torch.long)
-                if self.model_config.one_hop_ctg
-                else None
-            ),
+            one_hop_ctg=stack_feature("one_hop_ctg", torch.long),
             agent_valid=stack_feature("agent_valid", torch.bool),
             track_reset=stack_feature("track_reset", torch.bool),
             previous_action=torch.as_tensor(
@@ -303,6 +300,7 @@ class MAPFTransformerInference:
         )
         for ego_id, ego_state in enumerate(state.ego_states):
             ego_state.encoded_frames.append(frame_batch_current[ego_id].detach())
+            ego_state.encoded_token_valid.append(token_valid_current[ego_id].detach())
 
         b = positions.shape[0]
         f = self.model_config.history_frames
@@ -310,6 +308,7 @@ class MAPFTransformerInference:
         d = self.model_config.d_model
         frame_batch = torch.zeros((b, f, p, d), dtype=torch.float32, device=self.device)
         valid_batch = torch.zeros((b, f), dtype=torch.bool, device=self.device)
+        token_valid_batch = torch.zeros((b, f, p), dtype=torch.bool, device=self.device)
         for ego_id, ego_state in enumerate(state.ego_states):
             count = len(ego_state.encoded_frames)
             start_index = f - count
@@ -318,8 +317,13 @@ class MAPFTransformerInference:
                     list(ego_state.encoded_frames), dim=0
                 )
                 valid_batch[ego_id, start_index:] = True
+                token_valid_batch[ego_id, start_index:] = torch.stack(
+                    list(ego_state.encoded_token_valid), dim=0
+                )
 
-        output = self.model.forward_encoded_frames(frame_batch, valid_batch)
+        output = self.model.forward_encoded_frames(
+            frame_batch, valid_batch, frame_token_valid=token_valid_batch
+        )
         temperature = max(float(self.inference_config.temperature), 1e-6)
         if self.inference_config.sample_actions:
             probabilities = torch.softmax(output.logits / temperature, dim=-1)

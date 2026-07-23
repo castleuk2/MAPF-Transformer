@@ -1,9 +1,16 @@
 import torch
+import pytest
 
 from mapf_transformer.config import ModelConfig
 from mapf_transformer.dataset import SequenceSampleBuilder
 from mapf_transformer.model import MAPFTransformer
 from mapf_transformer.synthetic import generate_synthetic_episode
+
+
+def test_simplified_agent_metadata_requires_one_hop_ctg():
+    config = ModelConfig(one_hop_ctg=False)
+    with pytest.raises(ValueError, match="requires one_hop_ctg=true"):
+        config.validate()
 
 
 def test_model_forward_and_backward():
@@ -58,7 +65,7 @@ def test_eval_can_report_action_reconstruction_and_total_losses():
     assert torch.allclose(output.loss, expected)
 
 
-def test_one_hop_ctg_is_optional_and_does_not_change_token_count():
+def test_agent_local_encoder_and_interaction_latents_make_265_token_context():
     config = ModelConfig(
         d_model=32,
         n_heads=4,
@@ -74,8 +81,21 @@ def test_one_hop_ctg_is_optional_and_does_not_change_token_count():
     batch = {key: value.unsqueeze(0) for key, value in sample.items()}
     model = MAPFTransformer(config)
 
-    frames, _ = model.encode_frames(batch)
+    frames, _, token_valid = model.encode_frames(batch)
     assert frames.shape[1:3] == (config.history_frames, config.tokens_per_frame)
+    assert token_valid.shape[1:] == (config.history_frames, config.tokens_per_frame)
+    assert config.agents_per_frame == 25
+    assert config.interaction_latents == 7
+    assert config.agent_latents == 32
+    assert config.context_tokens == 265
     output = model(batch)
     assert output.logits.shape == (1, config.num_actions)
+    assert model.agent_tokenizer.field_type.num_embeddings == 8
+    assert len(model.agent_tokenizer.one_hop_ctg_embeddings) == 4
+    assert model.agent_set_encoder.interaction_queries.shape[0] == 7
     assert model.agent_tokenizer.one_hop_ctg_embeddings is not None
+    assert not hasattr(model.agent_tokenizer, "direction_embedding")
+    assert not hasattr(model.agent_tokenizer, "flexibility_embedding")
+    assert not hasattr(model.agent_tokenizer, "role_embedding")
+    assert not hasattr(model.agent_tokenizer, "validity_embedding")
+    assert hasattr(model.agent_tokenizer, "track_reset_embedding")
