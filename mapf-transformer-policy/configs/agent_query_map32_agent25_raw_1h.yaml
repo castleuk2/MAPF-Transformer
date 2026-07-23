@@ -1,21 +1,13 @@
-# Configuration matrix expanded by train_agent_latent_grid.py.
-# Agent latent/history pairs follow the shared-chat iso-token proposal.
-grid:
-  map_latents: [32, 48, 64]
-  agent_settings:
-    - agent_latents: 32
-      history_frames: 8
-    - agent_latents: 48
-      history_frames: 5
-    - agent_latents: 64
-      history_frames: 4
-
-base_model:
+model:
   map_size: 15
+  map_latents: 32
   one_hop_ctg: true
   max_neighbors: 24
+  # 25 real agent latents; no learned interaction latents.
+  agent_latents: 25
   agent_local_layers: 1
   agent_set_layers: 1
+  history_frames: 8
   d_model: 256
   n_heads: 8
   temporal_layers: 8
@@ -25,9 +17,10 @@ base_model:
   aux_map_reconstruction: true
   aux_map_loss_weight: 0.05
 
-base_training:
+training:
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
+  output_dir: mapf-transformer-policy/runs/agent_query_map32_agent25_raw_1h
   batch_size: 16
   val_batch_size: 128
   gradient_accumulation_steps: 16

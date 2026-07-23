@@ -128,39 +128,35 @@ torchrun --standalone --nproc_per_node=2 \
   2>&1 | tee mapf-transformer-policy/runs/agent_field8_raw_1h/console.log
 ```
 
-### Map/agent latent grid
+### Learned agent-query comparison
 
-`configs/agent_latent_grid_raw_1h.yaml` defines the nine Cartesian-product
-experiments between map latents `[32, 48, 64]` and agent latents
-`[32, 48, 64]`. Agent settings preserve the proposed iso-token layouts:
-`32/8 frames/265 tokens`, `48/5/246`, and `64/4/261`.
+Both experiments use 32 map latents, eight history frames, the same raw
+MAPF-LNS2 data, and an effective batch of 256. For each visible agent, one
+learned query cross-attends to eight metadata tokens and produces one agent
+latent.
 
-Prepare and run one combination:
+- `agent_query_map32_agent25_raw_1h.yaml`: 25 real agent latents and no
+  interaction latents; context is `8 * (25 + 1 transition) + 1 ACT = 209`.
+- `agent_query_map32_agent32_raw_1h.yaml`: 25 real agent latents plus seven
+  learned interaction latents; context is
+  `8 * (32 + 1 transition) + 1 ACT = 265`.
+
+Run either configuration with two GPUs:
 
 ```bash
-MAP=32
-AGENT=48
-RUN="raw_map${MAP}_agent${AGENT}"
-
-PYTHONPATH=mapf-transformer-policy/src \
-python mapf-transformer-policy/prepare_agent_latent_grid.py \
-  --grid-config mapf-transformer-policy/configs/agent_latent_grid_raw_1h.yaml \
-  --map-latents "${MAP}" \
-  --agent-latents "${AGENT}"
-
+CONFIG=agent_query_map32_agent25_raw_1h
+mkdir -p "mapf-transformer-policy/runs/${CONFIG}"
+set -o pipefail
 CUDA_VISIBLE_DEVICES=0,1 \
 PYTHONPATH=mapf-transformer-policy/src \
 torchrun --standalone --nproc_per_node=2 \
   mapf-transformer-policy/train.py \
-  --config "mapf-transformer-policy/runs/${RUN}/launch_config.yaml" \
-  2>&1 | tee "mapf-transformer-policy/runs/${RUN}/console.log"
+  --config "mapf-transformer-policy/configs/${CONFIG}.yaml" \
+  2>&1 | tee "mapf-transformer-policy/runs/${CONFIG}/console.log"
 ```
 
-To run all nine combinations sequentially on one two-GPU computer:
-
-```bash
-bash mapf-transformer-policy/run_agent_latent_grid.sh
-```
+Replace `CONFIG` with `agent_query_map32_agent32_raw_1h` for the seven
+interaction-latent condition.
 
 Important outputs:
 

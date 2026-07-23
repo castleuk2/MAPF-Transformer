@@ -146,8 +146,35 @@ class SpatialMapEncoder(nn.Module):
         return latents, reconstruction_logits
 
 
+class AgentLatentCrossAttentionBlock(nn.Module):
+    """Updates one learned agent query from its eight metadata tokens."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.query_norm = nn.LayerNorm(config.d_model)
+        self.metadata_norm = nn.LayerNorm(config.d_model)
+        self.cross_attention = nn.MultiheadAttention(
+            config.d_model,
+            config.n_heads,
+            dropout=config.dropout,
+            batch_first=True,
+        )
+        self.ff_norm = nn.LayerNorm(config.d_model)
+        self.ff = FeedForward(config.d_model, config.mlp_ratio, config.dropout)
+
+    def forward(self, query: torch.Tensor, metadata: torch.Tensor) -> torch.Tensor:
+        attended, _ = self.cross_attention(
+            self.query_norm(query),
+            self.metadata_norm(metadata),
+            self.metadata_norm(metadata),
+            need_weights=False,
+        )
+        query = query + attended
+        return query + self.ff(self.ff_norm(query))
+
+
 class AgentLocalEncoder(nn.Module):
-    """Encodes eight typed fields independently for every stable agent slot."""
+    """Compresses eight typed metadata tokens into one latent per agent."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -160,13 +187,14 @@ class AgentLocalEncoder(nn.Module):
         self.one_hop_ctg_embeddings = nn.ModuleList(
             [nn.Embedding(ONE_HOP_CTG_STATES, d) for _ in range(4)]
         )
-        self.anchor_embedding = nn.Embedding(config.agents_per_frame, d)
-        self.slot_embedding = nn.Embedding(config.agents_per_frame, d)
+        self.stable_slot_embedding = nn.Embedding(config.agents_per_frame, d)
         self.field_type = nn.Embedding(8, d)
         self.track_reset_embedding = nn.Embedding(2, d)
         self.agent_modality = nn.Parameter(torch.zeros(1, 1, 1, d))
+        self.learned_agent_query = nn.Parameter(torch.empty(1, 1, d))
+        nn.init.normal_(self.learned_agent_query, std=0.02)
         self.blocks = nn.ModuleList(
-            [LatentBlock(config) for _ in range(config.agent_local_layers)]
+            [AgentLatentCrossAttentionBlock(config) for _ in range(config.agent_local_layers)]
         )
         self.output_norm = nn.LayerNorm(d)
 
@@ -200,17 +228,17 @@ class AgentLocalEncoder(nn.Module):
             embedding(one_hop_ctg[..., action + 1].long().clamp(0, ONE_HOP_CTG_STATES - 1))
             for action, embedding in enumerate(self.one_hop_ctg_embeddings)
         ]
-        anchor = self.anchor_embedding(self.slot_ids).unsqueeze(0).expand(n, -1, -1)
-        fields = torch.stack([anchor, x, y, *directional, distance_emb], dim=2)
-        field_ids = torch.arange(8, device=fields.device)
-        slot = self.slot_embedding(self.slot_ids).view(1, agents, 1, -1)
+        stable_slot = self.stable_slot_embedding(self.slot_ids).unsqueeze(0).expand(n, -1, -1)
+        metadata = torch.stack([stable_slot, x, y, *directional, distance_emb], dim=2)
+        field_ids = torch.arange(8, device=metadata.device)
         reset = self.track_reset_embedding(track_reset.long().clamp(0, 1)).unsqueeze(2)
-        fields = fields + self.field_type(field_ids).view(1, 1, 8, -1)
-        fields = fields + slot + reset + self.agent_modality
-        fields = fields.reshape(n * agents, 8, self.config.d_model)
+        metadata = metadata + self.field_type(field_ids).view(1, 1, 8, -1)
+        metadata = metadata + reset + self.agent_modality
+        metadata = metadata.reshape(n * agents, 8, self.config.d_model)
+        latent = self.learned_agent_query.expand(n * agents, -1, -1)
         for block in self.blocks:
-            fields = block(fields)
-        entities = self.output_norm(fields[:, 0]).reshape(n, agents, self.config.d_model)
+            latent = block(latent, metadata)
+        entities = self.output_norm(latent[:, 0]).reshape(n, agents, self.config.d_model)
         return entities.masked_fill(~agent_valid.bool().unsqueeze(-1), 0.0)
 
 

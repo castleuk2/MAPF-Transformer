@@ -35,6 +35,8 @@ def test_model_forward_and_backward():
     assert torch.isfinite(output.loss)
     output.loss.backward()
     assert model.action_head.weight.grad is not None
+    assert model.agent_tokenizer.learned_agent_query.grad is not None
+    assert model.agent_tokenizer.blocks[0].cross_attention.in_proj_weight.grad is not None
 
 
 def test_eval_can_report_action_reconstruction_and_total_losses():
@@ -91,6 +93,11 @@ def test_agent_local_encoder_and_interaction_latents_make_265_token_context():
     output = model(batch)
     assert output.logits.shape == (1, config.num_actions)
     assert model.agent_tokenizer.field_type.num_embeddings == 8
+    assert model.agent_tokenizer.learned_agent_query.shape == (1, 1, config.d_model)
+    assert model.agent_tokenizer.stable_slot_embedding.num_embeddings == 25
+    assert not hasattr(model.agent_tokenizer, "anchor_embedding")
+    assert not hasattr(model.agent_tokenizer, "slot_embedding")
+    assert hasattr(model.agent_tokenizer.blocks[0], "cross_attention")
     assert len(model.agent_tokenizer.one_hop_ctg_embeddings) == 4
     assert model.agent_set_encoder.interaction_queries.shape[0] == 7
     assert model.agent_tokenizer.one_hop_ctg_embeddings is not None
@@ -99,3 +106,33 @@ def test_agent_local_encoder_and_interaction_latents_make_265_token_context():
     assert not hasattr(model.agent_tokenizer, "role_embedding")
     assert not hasattr(model.agent_tokenizer, "validity_embedding")
     assert hasattr(model.agent_tokenizer, "track_reset_embedding")
+
+
+def test_agent25_uses_only_real_agent_latents_and_makes_209_token_context():
+    config = ModelConfig(
+        d_model=32,
+        n_heads=4,
+        temporal_layers=1,
+        spatial_latent_layers=1,
+        map_latents=4,
+        agent_latents=25,
+        history_frames=8,
+        dropout=0.0,
+        mlp_ratio=2,
+        one_hop_ctg=True,
+    )
+    episode = generate_synthetic_episode(seed=11, num_agents=2, max_steps=4)
+    sample = SequenceSampleBuilder(config).build(episode, ego_id=0, time_step=0)
+    batch = {key: value.unsqueeze(0) for key, value in sample.items()}
+    model = MAPFTransformer(config)
+
+    frames, _, token_valid = model.encode_frames(batch)
+    assert config.agents_per_frame == 25
+    assert config.interaction_latents == 0
+    assert config.tokens_per_frame == 26
+    assert config.context_tokens == 209
+    assert frames.shape[1:3] == (8, 26)
+    assert token_valid.shape[1:] == (8, 26)
+    assert model.agent_set_encoder.interaction_queries.shape == (0, config.d_model)
+    output = model(batch)
+    assert output.logits.shape == (1, config.num_actions)
