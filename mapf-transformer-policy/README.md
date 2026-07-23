@@ -128,6 +128,40 @@ torchrun --standalone --nproc_per_node=2 \
   2>&1 | tee mapf-transformer-policy/runs/agent_field8_raw_1h/console.log
 ```
 
+### Map/agent latent grid
+
+`configs/agent_latent_grid_raw_1h.yaml` defines the nine Cartesian-product
+experiments between map latents `[32, 48, 64]` and agent latents
+`[32, 48, 64]`. Agent settings preserve the proposed iso-token layouts:
+`32/8 frames/265 tokens`, `48/5/246`, and `64/4/261`.
+
+Prepare and run one combination:
+
+```bash
+MAP=32
+AGENT=48
+RUN="raw_map${MAP}_agent${AGENT}"
+
+PYTHONPATH=mapf-transformer-policy/src \
+python mapf-transformer-policy/prepare_agent_latent_grid.py \
+  --grid-config mapf-transformer-policy/configs/agent_latent_grid_raw_1h.yaml \
+  --map-latents "${MAP}" \
+  --agent-latents "${AGENT}"
+
+CUDA_VISIBLE_DEVICES=0,1 \
+PYTHONPATH=mapf-transformer-policy/src \
+torchrun --standalone --nproc_per_node=2 \
+  mapf-transformer-policy/train.py \
+  --config "mapf-transformer-policy/runs/${RUN}/launch_config.yaml" \
+  2>&1 | tee "mapf-transformer-policy/runs/${RUN}/console.log"
+```
+
+To run all nine combinations sequentially on one two-GPU computer:
+
+```bash
+bash mapf-transformer-policy/run_agent_latent_grid.sh
+```
+
 Important outputs:
 
 - `resolved_config.yaml`
