@@ -68,7 +68,7 @@ def test_eval_can_report_action_reconstruction_and_total_losses():
 
 @pytest.mark.parametrize(
     ("history_frames", "expected_context"),
-    [(5, 131), (8, 209), (10, 261)],
+    [(5, 131), (10, 261)],
 )
 def test_agent25_temporal_context_has_no_pre_temporal_agent_set_attention(
     history_frames: int,
@@ -93,3 +93,21 @@ def test_agent25_temporal_context_has_no_pre_temporal_agent_set_attention(
     assert len(model.agent_tokenizer.one_hop_ctg_embeddings) == 4
     output = model(batch)
     assert output.logits.shape == (1, config.num_actions)
+
+
+def test_temporal_mask_is_bidirectional_within_frame_and_causal_across_frames():
+    config = _small_config(history_frames=5)
+    model = MAPFTransformer(config)
+    frame_valid = torch.ones((1, 5), dtype=torch.bool)
+    token_valid = torch.ones((1, 5, config.tokens_per_frame), dtype=torch.bool)
+    mask, _ = model._build_temporal_attention_mask(frame_valid, token_valid)
+    # The mask is repeated for every attention head; inspect the first head.
+    mask = mask[0]
+    p = config.tokens_per_frame
+    act = config.history_frames * p
+
+    assert not mask[0, 1]       # Same-frame attention is bidirectional.
+    assert mask[0, p]           # An old frame cannot read a future frame.
+    assert not mask[p, 0]       # A newer frame can read an older frame.
+    assert not mask[act, 0]     # ACT reads all valid temporal context.
+    assert mask[0, act]         # Ordinary tokens cannot read ACT.

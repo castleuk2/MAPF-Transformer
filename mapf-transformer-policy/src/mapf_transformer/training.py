@@ -38,8 +38,13 @@ def distributed_context(requested_device: str) -> tuple[torch.device, int, int, 
         if not torch.cuda.is_available():
             raise RuntimeError("DDP training currently requires CUDA/NCCL")
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl", init_method="env://")
-        return torch.device("cuda", local_rank), rank, local_rank, world_size, True
+        device = torch.device("cuda", local_rank)
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            device_id=device,
+        )
+        return device, rank, local_rank, world_size, True
     return choose_device(requested_device), rank, local_rank, world_size, False
 
 
@@ -175,12 +180,14 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
     config.validate()
     train_cfg = config.training
     model_cfg = config.model
+    requested_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    accumulation_per_rank = local_accumulation_steps(
+        train_cfg.gradient_accumulation_steps,
+        requested_world_size,
+    )
     device, rank, local_rank, world_size, distributed = distributed_context(train_cfg.device)
     is_main = rank == 0
     set_seed(train_cfg.seed + rank)
-    accumulation_per_rank = local_accumulation_steps(
-        train_cfg.gradient_accumulation_steps, world_size
-    )
     output_dir = Path(train_cfg.output_dir)
     metrics_path = output_dir / "metrics.jsonl"
     if is_main:

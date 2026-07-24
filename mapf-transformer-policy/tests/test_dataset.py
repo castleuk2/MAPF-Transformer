@@ -36,6 +36,30 @@ def test_initial_history_is_padded_without_separate_dataset():
     assert later["frame_valid"].sum().item() == later_time + 1
 
 
+def test_configured_history_window_keeps_only_latest_frames():
+    config = ModelConfig(
+        history_frames=5,
+        d_model=32,
+        n_heads=4,
+        temporal_layers=1,
+        map_latents=4,
+    )
+    episode = generate_synthetic_episode(seed=9, num_agents=3, max_steps=8)
+    time_step = min(6, episode.time_steps - 1)
+    builder = SequenceSampleBuilder(config)
+
+    full = builder.build(episode, ego_id=0, time_step=time_step)
+    shortened = builder.build(
+        episode,
+        ego_id=0,
+        time_step=time_step,
+        keep_history=2,
+    )
+    assert full["frame_valid"].sum().item() == min(5, time_step + 1)
+    assert shortened["frame_valid"].tolist() == [False, False, False, True, True]
+    assert shortened["time_step"].item() == time_step
+
+
 def test_dataset_excludes_only_waits_after_final_goal_arrival(tmp_path):
     goals = np.asarray([[0, 1], [1, 2]], dtype=np.int16)
     positions = np.asarray([

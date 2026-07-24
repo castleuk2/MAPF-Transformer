@@ -217,7 +217,7 @@ class _EpisodeLRU:
 
 
 class SequenceSampleBuilder:
-    """Builds one 15-frame policy sample from a raw episode trajectory."""
+    """Builds one configured-length policy sample from a raw trajectory."""
 
     def __init__(self, config: ModelConfig) -> None:
         self.config = config

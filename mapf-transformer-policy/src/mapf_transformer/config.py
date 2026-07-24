@@ -11,8 +11,8 @@ import yaml
 class ModelConfig:
     """Architecture and input-layout configuration.
 
-    Default temporal layout:
-    8 frames * (25 agent tokens + 1 transition) + 1 ACT query = 209 tokens.
+    Temporal layout:
+    history_frames * (25 agent tokens + 1 transition) + 1 ACT query.
     """
 
     map_size: int = 15
