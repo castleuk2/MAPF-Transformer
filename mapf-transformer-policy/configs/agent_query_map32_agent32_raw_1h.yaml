@@ -2,6 +2,8 @@ model:
   map_size: 15
   map_latents: 32
   one_hop_ctg: true
+  distance_encoding: exact
+  distance_buckets: 64
   max_neighbors: 24
   # 25 real agent latents + 7 learned interaction latents.
   agent_latents: 32
@@ -20,7 +22,7 @@ model:
 training:
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
-  output_dir: mapf-transformer-policy/runs/agent_query_map32_agent32_raw_1h
+  output_dir: mapf-transformer-policy/runs/agent_query_map32_agent32_tracking24_exact_raw_1h
   batch_size: 16
   val_batch_size: 128
   gradient_accumulation_steps: 16

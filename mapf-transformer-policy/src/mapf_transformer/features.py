@@ -13,10 +13,9 @@ from .geometry import (
     action_from_displacement,
     bfs_distance_map,
     crop_local_map,
+    encode_goal_distance,
     global_to_local,
-    quantize_distance,
     one_hop_cost_to_go,
-    shortest_path_action_mask,
     CTG_UNREACHABLE,
 )
 from .tracking import StableNeighborTracker, TrackingResult
@@ -36,7 +35,6 @@ class FrameFeatures:
     local_map: np.ndarray
     agent_x: np.ndarray
     agent_y: np.ndarray
-    action_mask: np.ndarray
     distance: np.ndarray
     one_hop_ctg: np.ndarray
     agent_valid: np.ndarray
@@ -160,8 +158,7 @@ def build_frame_features(
     slots = config.agents_per_frame
     agent_x = np.full(slots, 15, dtype=np.int64)
     agent_y = np.full(slots, 15, dtype=np.int64)
-    action_mask = np.zeros((slots, 4), dtype=np.float32)
-    distance = np.full(slots, 63, dtype=np.int64)
+    distance = np.full(slots, config.distance_buckets - 1, dtype=np.int64)
     one_hop_ctg = np.full((slots, 5), CTG_UNREACHABLE, dtype=np.int64)
     valid = np.zeros(slots, dtype=bool)
     track_reset = np.zeros(slots, dtype=bool)
@@ -177,9 +174,12 @@ def build_frame_features(
         valid[slot] = True
         track_reset[slot] = bool(slot_reset[slot])
         distance_map = distance_cache.get(goals[agent_id])
-        action_mask[slot] = shortest_path_action_mask(distance_map, positions[agent_id])
         raw_distance = int(distance_map[tuple(positions[agent_id])])
-        distance[slot] = quantize_distance(raw_distance)
+        distance[slot] = encode_goal_distance(
+            raw_distance,
+            config.distance_encoding,
+            config.distance_buckets,
+        )
         if config.one_hop_ctg:
             one_hop_ctg[slot] = one_hop_cost_to_go(
                 distance_map, obstacles, positions[agent_id]
@@ -190,9 +190,12 @@ def build_frame_features(
     agent_y[ego_slot] = config.local_radius
     valid[ego_slot] = True
     ego_distance_map = distance_cache.get(goals[ego_id])
-    action_mask[ego_slot] = shortest_path_action_mask(ego_distance_map, ego_xy)
     raw_ego_distance = int(ego_distance_map[tuple(ego_xy)])
-    distance[ego_slot] = quantize_distance(raw_ego_distance)
+    distance[ego_slot] = encode_goal_distance(
+        raw_ego_distance,
+        config.distance_encoding,
+        config.distance_buckets,
+    )
     if config.one_hop_ctg:
         one_hop_ctg[ego_slot] = one_hop_cost_to_go(ego_distance_map, obstacles, ego_xy)
 
@@ -207,7 +210,6 @@ def build_frame_features(
         local_map=local_map,
         agent_x=agent_x,
         agent_y=agent_y,
-        action_mask=action_mask,
         distance=distance,
         one_hop_ctg=one_hop_ctg,
         agent_valid=valid,
@@ -225,8 +227,7 @@ def empty_frame_features(config: ModelConfig) -> FrameFeatures:
         local_map=np.zeros((config.map_size, config.map_size), dtype=np.uint8),
         agent_x=np.full(slots, 15, dtype=np.int64),
         agent_y=np.full(slots, 15, dtype=np.int64),
-        action_mask=np.zeros((slots, 4), dtype=np.float32),
-        distance=np.full(slots, 63, dtype=np.int64),
+        distance=np.full(slots, config.distance_buckets - 1, dtype=np.int64),
         one_hop_ctg=np.full((slots, 5), CTG_UNREACHABLE, dtype=np.int64),
         agent_valid=np.zeros(slots, dtype=bool),
         track_reset=np.zeros(slots, dtype=bool),

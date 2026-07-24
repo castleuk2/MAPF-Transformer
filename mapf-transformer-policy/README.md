@@ -113,9 +113,9 @@ Rank 0 also writes structured train/validation/checkpoint events to
 ### Eight-field raw-trajectory experiment
 
 The 25-entity/7-interaction-latent model reads the existing raw MAPF-LNS2
-trajectories directly. It recomputes the 24 stable neighbor slots and eight
-history frames at load time; no packed cache or regenerated expert trajectory
-is required.
+trajectories directly. The 24 stable-neighbor slots are precomputed once in
+the existing NPZ files; no packed cache or regenerated expert trajectory is
+required.
 
 ```bash
 mkdir -p mapf-transformer-policy/runs/agent_field8_raw_1h
@@ -135,6 +135,32 @@ MAPF-LNS2 data, and an effective batch of 256. For each visible agent, one
 learned query cross-attends to eight metadata tokens and produces one agent
 latent.
 
+Before training a 24-neighbor model, add full-episode 24-slot tracking to the
+existing NPZ files. The original 15-slot arrays are preserved for legacy
+checkpoints, and the additional arrays are written atomically:
+
+```bash
+PYTHONPATH=mapf-transformer-policy/src \
+python mapf-transformer-policy/upgrade_neighbor_tracking.py \
+  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl \
+  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl \
+  --workers 24 \
+  --overwrite
+```
+
+The 24-neighbor loader then uses `neighbor_ids_24`, `neighbor_valid_24`, and
+`track_reset_24` computed from the complete episode, so Stable Slot identity
+matches the online runtime. When all slots are occupied, a newly visible agent
+replaces the farthest tracked agent only if it is strictly closer to Ego.
+`--overwrite` ensures that NPZ files produced by an older slot policy are
+updated to this replacement policy.
+
+New Agent Query runs use `distance_encoding: exact` with 64 embeddings:
+values 0 through 62 are exact BFS steps and 63 is reserved for unreachable.
+The current train/validation trajectories have a maximum observed BFS input
+distance of 62. Existing checkpoints without this config field keep the
+legacy 64-value four-hop bucket encoding.
+
 - `agent_query_map32_agent25_raw_1h.yaml`: 25 real agent latents and no
   interaction latents; context is `8 * (25 + 1 transition) + 1 ACT = 209`.
 - `agent_query_map32_agent32_raw_1h.yaml`: 25 real agent latents plus seven
@@ -144,28 +170,51 @@ latent.
   latents plus seven learned interaction latents, with five history frames;
   context is `5 * (32 + 1 transition) + 1 ACT = 166`.
 
-Run either configuration with two GPUs:
+The three controlled experiments should be run on separate two-GPU machines:
 
 ```bash
-CONFIG=agent_query_map32_agent25_raw_1h
-mkdir -p "mapf-transformer-policy/runs/${CONFIG}"
+CONFIG=agent_query_map32_agent25_raw_1h  # PC 1
+RUN=agent_query_map32_agent25_tracking24_exact_raw_1h
+mkdir -p "mapf-transformer-policy/runs/${RUN}"
 set -o pipefail
 CUDA_VISIBLE_DEVICES=0,1 \
 PYTHONPATH=mapf-transformer-policy/src \
 torchrun --standalone --nproc_per_node=2 \
   mapf-transformer-policy/train.py \
   --config "mapf-transformer-policy/configs/${CONFIG}.yaml" \
-  2>&1 | tee "mapf-transformer-policy/runs/${CONFIG}/console.log"
+  2>&1 | tee "mapf-transformer-policy/runs/${RUN}/console.log"
 ```
 
-Replace `CONFIG` with `agent_query_map32_agent32_raw_1h` for the seven
-interaction-latent condition, or with
-`agent_query_map32_agent32_history5_raw_1h` for the five-frame condition.
+Use these PC assignments:
+
+- PC 1: `agent_query_map32_agent25_raw_1h` — Agent25, history8.
+- PC 2: `agent_query_map32_agent32_raw_1h` — Agent25+7 interaction, history8.
+- PC 3: `agent_query_map32_agent32_history5_raw_1h` — Agent25+7 interaction,
+  history5.
 
 The controlled comparisons are:
 
 - Agent25/history8 versus Agent32/history8: effect of seven interaction latents.
 - Agent32/history8 versus Agent32/history5: effect of temporal history length.
+
+### Distance-graph attention model
+
+The existing dense models remain the default (`agent_attention_mode: dense`).
+`agent_query_map32_agent25_history8_graph_r3_raw_1h.yaml` is a separate
+controlled model that uses the same Map32/Agent25/history8 configuration and
+sets:
+
+```yaml
+agent_attention_mode: distance_graph
+graph_radius: 3
+```
+
+For every frame, valid physical agent nodes are connected when their Manhattan
+distance is at most three. The same adjacency masks both the frame-level agent
+set attention and the same-frame portion of temporal attention. Cross-frame
+attention remains causal as in the dense model. The graph is computed at load
+time from `agent_x`, `agent_y`, and `agent_valid`; expert trajectories do not
+need to be regenerated.
 
 Important outputs:
 

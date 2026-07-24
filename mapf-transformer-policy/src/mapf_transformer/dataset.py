@@ -30,6 +30,9 @@ class EpisodeData:
     neighbor_ids: np.ndarray | None = None
     neighbor_valid: np.ndarray | None = None
     track_reset: np.ndarray | None = None
+    neighbor_ids_24: np.ndarray | None = None
+    neighbor_valid_24: np.ndarray | None = None
+    track_reset_24: np.ndarray | None = None
     metadata: dict[str, Any] | None = None
 
     @property
@@ -80,6 +83,14 @@ class EpisodeData:
             raise ValueError("arrival_steps must have shape [N]")
         if np.any((arrivals < 0) | (arrivals > self.time_steps)):
             raise ValueError("arrival_steps must be between 0 and time_steps")
+        expected_tracking24 = (self.positions.shape[0], self.num_agents, 24)
+        for name, value in (
+            ("neighbor_ids_24", self.neighbor_ids_24),
+            ("neighbor_valid_24", self.neighbor_valid_24),
+            ("track_reset_24", self.track_reset_24),
+        ):
+            if value is not None and value.shape != expected_tracking24:
+                raise ValueError(f"{name} must have shape {expected_tracking24}")
 
 
 def save_episode(path: str | Path, episode: EpisodeData, compress: bool = True) -> None:
@@ -100,6 +111,12 @@ def save_episode(path: str | Path, episode: EpisodeData, compress: bool = True) 
         arrays["neighbor_valid"] = np.asarray(episode.neighbor_valid, dtype=bool)
     if episode.track_reset is not None:
         arrays["track_reset"] = np.asarray(episode.track_reset, dtype=bool)
+    if episode.neighbor_ids_24 is not None:
+        arrays["neighbor_ids_24"] = np.asarray(episode.neighbor_ids_24, dtype=np.int16)
+    if episode.neighbor_valid_24 is not None:
+        arrays["neighbor_valid_24"] = np.asarray(episode.neighbor_valid_24, dtype=bool)
+    if episode.track_reset_24 is not None:
+        arrays["track_reset_24"] = np.asarray(episode.track_reset_24, dtype=bool)
     saver = np.savez_compressed if compress else np.savez
     saver(path, **arrays)
 
@@ -123,6 +140,15 @@ def load_episode(path: str | Path) -> EpisodeData:
             else None,
             track_reset=np.asarray(data["track_reset"], dtype=bool)
             if "track_reset" in data
+            else None,
+            neighbor_ids_24=np.asarray(data["neighbor_ids_24"], dtype=np.int16)
+            if "neighbor_ids_24" in data
+            else None,
+            neighbor_valid_24=np.asarray(data["neighbor_valid_24"], dtype=bool)
+            if "neighbor_valid_24" in data
+            else None,
+            track_reset_24=np.asarray(data["track_reset_24"], dtype=bool)
+            if "track_reset_24" in data
             else None,
             metadata=json.loads(metadata_raw),
         )
@@ -204,6 +230,19 @@ class SequenceSampleBuilder:
         ego_id: int,
         tracker: StableNeighborTracker,
     ) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+        if self.config.max_neighbors == 24 and episode.neighbor_ids_24 is not None:
+            ids = episode.neighbor_ids_24[frame, ego_id]
+            valid = (
+                episode.neighbor_valid_24[frame, ego_id]
+                if episode.neighbor_valid_24 is not None
+                else ids >= 0
+            )
+            reset = (
+                episode.track_reset_24[frame, ego_id]
+                if episode.track_reset_24 is not None
+                else np.zeros(24, dtype=bool)
+            )
+            return ids, valid, reset
         if (
             episode.neighbor_ids is not None
             and episode.neighbor_ids.shape[-1] == self.config.max_neighbors
@@ -280,7 +319,6 @@ class SequenceSampleBuilder:
             "local_maps": stack("local_map", torch.long),
             "agent_x": stack("agent_x", torch.long),
             "agent_y": stack("agent_y", torch.long),
-            "action_mask": stack("action_mask", torch.float32),
             "distance": stack("distance", torch.long),
             "one_hop_ctg": stack("one_hop_ctg", torch.long),
             "agent_valid": stack("agent_valid", torch.bool),

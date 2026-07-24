@@ -8,6 +8,7 @@ from mapf_transformer.geometry import (
     bfs_distance_map,
     one_hop_cost_to_go,
     pack_agent_payload,
+    encode_goal_distance,
     quantize_distance,
     shortest_path_action_mask,
     unpack_agent_payload,
@@ -44,6 +45,16 @@ def test_distance_quantization():
     assert quantize_distance(5) == 2
     assert quantize_distance(252) == 63
     assert quantize_distance(999) == 63
+    assert encode_goal_distance(0, "exact") == 0
+    assert encode_goal_distance(1, "exact") == 1
+    assert encode_goal_distance(4, "exact") == 4
+    assert encode_goal_distance(62, "exact") == 62
+    assert encode_goal_distance(63, "exact") == 62
+    assert encode_goal_distance(10**9, "exact") == 63
+    assert encode_goal_distance(63, "exact", 256) == 63
+    assert encode_goal_distance(254, "exact", 256) == 254
+    assert encode_goal_distance(255, "exact", 256) == 254
+    assert encode_goal_distance(10**9, "exact", 256) == 255
 
 
 def test_payload_round_trip():

@@ -38,6 +38,7 @@ class _EgoRuntimeState:
     tracker: StableNeighborTracker
     encoded_frames: deque[torch.Tensor]
     encoded_token_valid: deque[torch.Tensor]
+    encoded_attention_allowed: deque[torch.Tensor]
     map_latents: torch.Tensor | None = None
 
 
@@ -152,6 +153,7 @@ class MAPFTransformerInference:
                 tracker=StableNeighborTracker(self.model_config.max_neighbors, grace_steps=1),
                 encoded_frames=deque(maxlen=self.model_config.history_frames),
                 encoded_token_valid=deque(maxlen=self.model_config.history_frames),
+                encoded_attention_allowed=deque(maxlen=self.model_config.history_frames),
             )
             for _ in range(num_agents)
         ]
@@ -185,9 +187,6 @@ class MAPFTransformerInference:
         return {
             "agent_x": torch.as_tensor(features.agent_x, dtype=torch.long, device=device).unsqueeze(0),
             "agent_y": torch.as_tensor(features.agent_y, dtype=torch.long, device=device).unsqueeze(0),
-            "action_mask": torch.as_tensor(
-                features.action_mask, dtype=torch.float32, device=device
-            ).unsqueeze(0),
             "distance": torch.as_tensor(features.distance, dtype=torch.long, device=device).unsqueeze(0),
             "one_hop_ctg": torch.as_tensor(
                 features.one_hop_ctg, dtype=torch.long, device=device
@@ -269,7 +268,11 @@ class MAPFTransformerInference:
         )
         if map_latents.shape[0] != positions.shape[0]:
             raise RuntimeError("Not every Ego spatial memory produced map latents")
-        frame_batch_current, token_valid_current = self.model.encode_frame_from_latents(
+        (
+            frame_batch_current,
+            token_valid_current,
+            attention_allowed_current,
+        ) = self.model.encode_frame_from_latents(
             map_latents=map_latents,
             agent_x=stack_feature("agent_x", torch.long),
             agent_y=stack_feature("agent_y", torch.long),
@@ -301,6 +304,10 @@ class MAPFTransformerInference:
         for ego_id, ego_state in enumerate(state.ego_states):
             ego_state.encoded_frames.append(frame_batch_current[ego_id].detach())
             ego_state.encoded_token_valid.append(token_valid_current[ego_id].detach())
+            if attention_allowed_current is not None:
+                ego_state.encoded_attention_allowed.append(
+                    attention_allowed_current[ego_id].detach()
+                )
 
         b = positions.shape[0]
         f = self.model_config.history_frames
@@ -309,6 +316,11 @@ class MAPFTransformerInference:
         frame_batch = torch.zeros((b, f, p, d), dtype=torch.float32, device=self.device)
         valid_batch = torch.zeros((b, f), dtype=torch.bool, device=self.device)
         token_valid_batch = torch.zeros((b, f, p), dtype=torch.bool, device=self.device)
+        attention_allowed_batch = None
+        if attention_allowed_current is not None:
+            attention_allowed_batch = torch.ones(
+                (b, f, p, p), dtype=torch.bool, device=self.device
+            )
         for ego_id, ego_state in enumerate(state.ego_states):
             count = len(ego_state.encoded_frames)
             start_index = f - count
@@ -320,9 +332,16 @@ class MAPFTransformerInference:
                 token_valid_batch[ego_id, start_index:] = torch.stack(
                     list(ego_state.encoded_token_valid), dim=0
                 )
+                if attention_allowed_batch is not None:
+                    attention_allowed_batch[ego_id, start_index:] = torch.stack(
+                        list(ego_state.encoded_attention_allowed), dim=0
+                    )
 
         output = self.model.forward_encoded_frames(
-            frame_batch, valid_batch, frame_token_valid=token_valid_batch
+            frame_batch,
+            valid_batch,
+            frame_token_valid=token_valid_batch,
+            frame_attention_allowed=attention_allowed_batch,
         )
         temperature = max(float(self.inference_config.temperature), 1e-6)
         if self.inference_config.sample_actions:

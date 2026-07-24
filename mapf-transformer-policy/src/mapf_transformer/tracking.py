@@ -55,9 +55,27 @@ class StableNeighborTracker:
 
         for agent_id in unassigned_visible:
             free_slots = np.flatnonzero(self.slot_ids < 0)
-            if free_slots.size == 0:
-                break
-            slot = int(free_slots[0])
+            if free_slots.size:
+                slot = int(free_slots[0])
+            else:
+                # All slots are occupied. Keep the nearest visible set by
+                # replacing the farthest tracked agent only when the newcomer
+                # is strictly closer. A briefly missing (grace-period) track
+                # has no finite current score and is replaced first.
+                newcomer_score = float(scores.get(agent_id, np.inf))
+                replacement = max(
+                    range(self.max_neighbors),
+                    key=lambda index: (
+                        float(scores.get(int(self.slot_ids[index]), np.inf)),
+                        int(self.slot_ids[index]),
+                    ),
+                )
+                tracked_score = float(
+                    scores.get(int(self.slot_ids[replacement]), np.inf)
+                )
+                if newcomer_score >= tracked_score:
+                    continue
+                slot = int(replacement)
             self.slot_ids[slot] = agent_id
             self.missing_steps[slot] = 0
             reset_flags[slot] = True

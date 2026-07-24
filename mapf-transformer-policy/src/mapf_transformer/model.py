@@ -283,12 +283,23 @@ class AgentSetBlock(nn.Module):
         self.norm2 = nn.LayerNorm(config.d_model)
         self.ff = FeedForward(config.d_model, config.mlp_ratio, config.dropout)
 
-    def forward(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        valid: torch.Tensor,
+        attention_allowed: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         normalized = self.norm1(x)
+        attention_mask = None
+        if attention_allowed is not None:
+            attention_mask = (~attention_allowed.bool()).repeat_interleave(
+                self.attn.num_heads, dim=0
+            )
         attended, _ = self.attn(
             normalized,
             normalized,
             normalized,
+            attn_mask=attention_mask,
             key_padding_mask=~valid.bool(),
             need_weights=False,
         )
@@ -313,8 +324,12 @@ class AgentInteractionEncoder(nn.Module):
         self.output_norm = nn.LayerNorm(config.d_model)
 
     def forward(
-        self, entities: torch.Tensor, entity_valid: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        entities: torch.Tensor,
+        entity_valid: torch.Tensor,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         n = entities.shape[0]
         interactions = self.interaction_queries.unsqueeze(0).expand(n, -1, -1)
         interaction_valid = torch.ones(
@@ -322,9 +337,46 @@ class AgentInteractionEncoder(nn.Module):
         )
         valid = torch.cat([entity_valid.bool(), interaction_valid], dim=1)
         x = torch.cat([entities, interactions], dim=1)
+        attention_allowed = self._build_attention_allowed(
+            agent_x, agent_y, entity_valid.bool(), interaction_valid
+        )
         for block in self.blocks:
-            x = block(x, valid)
-        return self.output_norm(x).masked_fill(~valid.unsqueeze(-1), 0.0), valid
+            x = block(x, valid, attention_allowed=attention_allowed)
+        output = self.output_norm(x).masked_fill(~valid.unsqueeze(-1), 0.0)
+        return output, valid, attention_allowed
+
+    def _build_attention_allowed(
+        self,
+        agent_x: torch.Tensor,
+        agent_y: torch.Tensor,
+        entity_valid: torch.Tensor,
+        interaction_valid: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if self.config.agent_attention_mode == "dense":
+            return None
+
+        dx = (agent_x.unsqueeze(2) - agent_x.unsqueeze(1)).abs()
+        dy = (agent_y.unsqueeze(2) - agent_y.unsqueeze(1)).abs()
+        physical_allowed = (dx + dy <= self.config.graph_radius)
+        physical_allowed &= entity_valid.unsqueeze(2) & entity_valid.unsqueeze(1)
+
+        n, agents = entity_valid.shape
+        interactions = interaction_valid.shape[1]
+        total = agents + interactions
+        allowed = torch.zeros((n, total, total), dtype=torch.bool, device=agent_x.device)
+        allowed[:, :agents, :agents] = physical_allowed
+
+        if interactions:
+            # Interaction latents are global group nodes without physical coordinates.
+            allowed[:, :agents, agents:] = entity_valid.unsqueeze(2)
+            allowed[:, agents:, :agents] = entity_valid.unsqueeze(1)
+            allowed[:, agents:, agents:] = True
+
+        # Invalid query rows are harmlessly left unmasked and zeroed after attention;
+        # this avoids all-masked rows producing NaNs.
+        invalid_queries = ~torch.cat([entity_valid, interaction_valid], dim=1)
+        allowed |= invalid_queries.unsqueeze(2)
+        return allowed
 
 
 class TransitionTokenizer(nn.Module):
@@ -454,7 +506,7 @@ class MAPFTransformer(nn.Module):
         actual_move: torch.Tensor,
         outcome: torch.Tensor,
         visible_count: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         agents = self.agent_tokenizer(
             agent_x,
             agent_y,
@@ -467,8 +519,11 @@ class MAPFTransformer(nn.Module):
         conditioned_agents = conditioned_agents.masked_fill(
             ~agent_valid.bool().unsqueeze(-1), 0.0
         )
-        agent_set, agent_set_valid = self.agent_set_encoder(
-            conditioned_agents, agent_valid
+        agent_set, agent_set_valid, agent_attention_allowed = self.agent_set_encoder(
+            conditioned_agents,
+            agent_valid,
+            agent_x,
+            agent_y,
         )
         transition = self.transition_tokenizer(
             previous_action,
@@ -484,13 +539,22 @@ class MAPFTransformer(nn.Module):
             ],
             dim=1,
         )
-        return frame_tokens, frame_token_valid
+        frame_attention_allowed = None
+        if agent_attention_allowed is not None:
+            n, agent_tokens = agent_set_valid.shape
+            frame_attention_allowed = torch.ones(
+                (n, agent_tokens + 1, agent_tokens + 1),
+                dtype=torch.bool,
+                device=agent_set.device,
+            )
+            frame_attention_allowed[:, :agent_tokens, :agent_tokens] = agent_attention_allowed
+        return frame_tokens, frame_token_valid, frame_attention_allowed
 
     def encode_frames(
         self,
         batch: Mapping[str, torch.Tensor],
         return_reconstruction: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor | None]:
         local_maps = batch["local_maps"]
         if local_maps.ndim != 4:
             raise ValueError("local_maps must have shape [B,F,H,W]")
@@ -507,7 +571,7 @@ class MAPFTransformer(nn.Module):
             tensor = batch[name]
             return tensor.reshape(b * f, *tensor.shape[2:])
 
-        frame_tokens, frame_token_valid = self.encode_frame_from_latents(
+        frame_tokens, frame_token_valid, frame_attention_allowed = self.encode_frame_from_latents(
             map_latents=map_latents,
             agent_x=flatten_agent("agent_x"),
             agent_y=flatten_agent("agent_y"),
@@ -529,6 +593,13 @@ class MAPFTransformer(nn.Module):
         frame_token_valid = frame_token_valid.reshape(
             b, f, self.config.tokens_per_frame
         )
+        if frame_attention_allowed is not None:
+            frame_attention_allowed = frame_attention_allowed.reshape(
+                b,
+                f,
+                self.config.tokens_per_frame,
+                self.config.tokens_per_frame,
+            )
         if reconstruction is not None:
             reconstruction = reconstruction.reshape(
                 b,
@@ -536,12 +607,13 @@ class MAPFTransformer(nn.Module):
                 self.config.map_size * self.config.map_size,
                 self.config.cell_states,
             )
-        return frame_tokens, reconstruction, frame_token_valid
+        return frame_tokens, reconstruction, frame_token_valid, frame_attention_allowed
 
     def _build_temporal_attention_mask(
         self,
         frame_valid: torch.Tensor,
         frame_token_valid: torch.Tensor | None = None,
+        frame_attention_allowed: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Builds block-causal mask: bidirectional within frame, causal across frames."""
         b, f = frame_valid.shape
@@ -571,6 +643,18 @@ class MAPFTransformer(nn.Module):
             dim=1,
         )
         masks = base.unsqueeze(0).expand(b, -1, -1).clone()
+        if frame_attention_allowed is not None:
+            expected = (b, f, p, p)
+            if frame_attention_allowed.shape != expected:
+                raise ValueError(
+                    f"frame_attention_allowed must have shape {expected}"
+                )
+            for frame_index in range(f):
+                start = frame_index * p
+                stop = start + p
+                masks[:, start:stop, start:stop] |= ~frame_attention_allowed[
+                    :, frame_index
+                ].bool()
         invalid_keys = ~token_valid
         masks |= invalid_keys.unsqueeze(1).expand(-1, total_tokens, -1)
 
@@ -590,6 +674,7 @@ class MAPFTransformer(nn.Module):
         frame_valid: torch.Tensor,
         targets: torch.Tensor | None = None,
         frame_token_valid: torch.Tensor | None = None,
+        frame_attention_allowed: torch.Tensor | None = None,
     ) -> MAPFTransformerOutput:
         if frame_tokens.ndim != 4:
             raise ValueError("frame_tokens must have shape [B,F,P,D]")
@@ -609,7 +694,9 @@ class MAPFTransformer(nn.Module):
         act = (self.act_query + self.act_modality).expand(b, -1, -1)
         x = torch.cat([temporal, act], dim=1)
         attention_mask, token_valid = self._build_temporal_attention_mask(
-            frame_valid.bool(), frame_token_valid
+            frame_valid.bool(),
+            frame_token_valid,
+            frame_attention_allowed,
         )
         x = x.masked_fill(~token_valid.unsqueeze(-1), 0.0)
         for block in self.temporal_blocks:
@@ -630,7 +717,7 @@ class MAPFTransformer(nn.Module):
         if return_reconstruction is None:
             return_reconstruction = self.training
         need_reconstruction = self.config.aux_map_reconstruction and return_reconstruction
-        frames, reconstruction, frame_token_valid = self.encode_frames(
+        frames, reconstruction, frame_token_valid, frame_attention_allowed = self.encode_frames(
             batch,
             return_reconstruction=need_reconstruction,
         )
@@ -639,6 +726,7 @@ class MAPFTransformer(nn.Module):
             batch["frame_valid"],
             targets=targets,
             frame_token_valid=frame_token_valid,
+            frame_attention_allowed=frame_attention_allowed,
         )
         output.map_reconstruction_logits = reconstruction
 

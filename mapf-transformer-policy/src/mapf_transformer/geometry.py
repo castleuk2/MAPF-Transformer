@@ -149,13 +149,39 @@ def one_hop_cost_to_go(
 
 
 def quantize_distance(distance: int) -> int:
-    """Maps 0 to 0 and positive distances to 4-hop buckets, saturated at 63."""
+    """Legacy 4-hop distance buckets used by existing checkpoints."""
     distance = int(distance)
     if distance <= 0:
         return 0
     if distance >= INF_DISTANCE:
         return 63
     return min(63, (distance + 3) // 4)
+
+
+def encode_goal_distance(
+    distance: int,
+    encoding: str = "bucket4",
+    num_buckets: int = 64,
+) -> int:
+    """Encodes goal distance while reserving the final value for unreachable.
+
+    ``bucket4`` is the legacy 64-value representation. ``exact`` preserves
+    exact shortest-path steps from 0 through ``num_buckets - 2`` and saturates
+    longer reachable paths at that last reachable value. The final value is
+    reserved for unreachable cells.
+    """
+    distance = int(distance)
+    if encoding == "bucket4":
+        if num_buckets != 64:
+            raise ValueError("Legacy bucket4 distance encoding requires 64 buckets")
+        return quantize_distance(distance)
+    if encoding != "exact":
+        raise ValueError(f"Unsupported goal-distance encoding: {encoding}")
+    if num_buckets < 2:
+        raise ValueError("Exact distance encoding requires at least 2 buckets")
+    if distance >= INF_DISTANCE:
+        return num_buckets - 1
+    return min(num_buckets - 2, max(0, distance))
 
 
 def global_to_local(

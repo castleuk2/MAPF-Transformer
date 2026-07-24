@@ -22,6 +22,8 @@ class ModelConfig:
     agent_latents: int = 32
     agent_local_layers: int = 1
     agent_set_layers: int = 1
+    agent_attention_mode: str = "dense"
+    graph_radius: int = 3
     history_frames: int = 8
     d_model: int = 256
     n_heads: int = 8
@@ -31,6 +33,9 @@ class ModelConfig:
     mlp_ratio: int = 4
     num_actions: int = 5
     distance_buckets: int = 64
+    # "bucket4" preserves compatibility with existing checkpoints.
+    # New models should use "exact": 0..62 are exact steps and 63 is unreachable.
+    distance_encoding: str = "bucket4"
     cell_states: int = 2
     aux_map_reconstruction: bool = True
     aux_map_loss_weight: float = 0.05
@@ -74,12 +79,20 @@ class ModelConfig:
             raise ValueError("agent_latents must be at least agents_per_frame")
         if self.agent_local_layers <= 0 or self.agent_set_layers <= 0:
             raise ValueError("agent_local_layers and agent_set_layers must be positive")
+        if self.agent_attention_mode not in {"dense", "distance_graph"}:
+            raise ValueError("agent_attention_mode must be 'dense' or 'distance_graph'")
+        if self.graph_radius <= 0:
+            raise ValueError("graph_radius must be positive")
         if self.history_frames <= 0:
             raise ValueError("history_frames must be positive")
         if self.d_model % self.n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads")
-        if self.distance_buckets != 64:
-            raise ValueError("The 6-bit distance field requires 64 buckets")
+        if self.distance_encoding not in {"bucket4", "exact"}:
+            raise ValueError("distance_encoding must be 'bucket4' or 'exact'")
+        if self.distance_encoding == "bucket4" and self.distance_buckets != 64:
+            raise ValueError("Legacy bucket4 distance encoding requires 64 buckets")
+        if self.distance_encoding == "exact" and self.distance_buckets < 2:
+            raise ValueError("Exact distance encoding requires at least 2 buckets")
         if self.num_actions != 5:
             raise ValueError("POGEMA-compatible action space requires 5 actions")
 

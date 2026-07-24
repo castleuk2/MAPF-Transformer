@@ -71,6 +71,39 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def capture_training_state(
+    scaler: torch.amp.GradScaler,
+    batch_in_epoch: int,
+) -> dict[str, object]:
+    return {
+        "batch_in_epoch": int(batch_in_epoch),
+        "scaler_state": scaler.state_dict(),
+        "python_rng_state": random.getstate(),
+        "numpy_rng_state": np.random.get_state(),
+        "torch_rng_state": torch.get_rng_state(),
+        "cuda_rng_state_all": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def restore_training_state(
+    state: dict[str, object],
+    scaler: torch.amp.GradScaler,
+) -> int:
+    if not state:
+        return 0
+    if state.get("scaler_state"):
+        scaler.load_state_dict(state["scaler_state"])
+    if state.get("python_rng_state") is not None:
+        random.setstate(state["python_rng_state"])
+    if state.get("numpy_rng_state") is not None:
+        np.random.set_state(state["numpy_rng_state"])
+    if state.get("torch_rng_state") is not None:
+        torch.set_rng_state(state["torch_rng_state"])
+    if torch.cuda.is_available() and state.get("cuda_rng_state_all") is not None:
+        torch.cuda.set_rng_state_all(state["cuda_rng_state_all"])
+    return int(state.get("batch_in_epoch", 0))
+
+
 def move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {name: tensor.to(device, non_blocking=True) for name, tensor in batch.items()}
 
@@ -167,13 +200,15 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
         max_samples=train_cfg.max_train_samples,
         seed=train_cfg.seed,
     )
+    # Use an epoch-addressable sampler even on one process so a resumed run can
+    # reconstruct the same shuffled order and skip exactly to the next batch.
     train_sampler = DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=train_cfg.seed
-    ) if distributed else None
+    )
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg.batch_size,
-        shuffle=train_sampler is None,
+        shuffle=False,
         sampler=train_sampler,
         num_workers=train_cfg.num_workers,
         pin_memory=device.type == "cuda",
@@ -228,7 +263,9 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
 
     global_step = 0
     start_epoch = 0
+    resume_batch_in_epoch = 0
     best_val = float("inf")
+    resume_training_state: dict[str, object] = {}
     if resume:
         payload = load_checkpoint_payload(resume, map_location=device)
         raw_model.load_state_dict(payload["model_state"])
@@ -239,9 +276,12 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
         global_step = int(payload.get("step", 0))
         start_epoch = int(payload.get("epoch", 0))
         best_val = float(payload.get("metrics", {}).get("best_val_loss", best_val))
+        resume_training_state = payload.get("training_state", {})
 
     use_amp = train_cfg.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    if resume_training_state:
+        resume_batch_in_epoch = restore_training_state(resume_training_state, scaler)
     model.train()
     running_loss = 0.0
     running_action_loss = 0.0
@@ -275,11 +315,15 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
         )
 
     optimizer.zero_grad(set_to_none=True)
+    last_epoch = start_epoch
+    next_batch_in_epoch = resume_batch_in_epoch
     for epoch in range(start_epoch, train_cfg.epochs):
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
+        train_sampler.set_epoch(epoch)
+        last_epoch = epoch
         loader_batches = len(train_loader)
         for batch_index, batch in enumerate(train_loader):
+            if epoch == start_epoch and batch_index < resume_batch_in_epoch:
+                continue
             if global_step >= total_steps:
                 break
             group_offset = batch_index % accumulation_per_rank
@@ -314,6 +358,7 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
             global_step += 1
+            next_batch_in_epoch = batch_index + 1
 
             if is_main and global_step % train_cfg.log_every == 0:
                 elapsed = max(1e-6, time.time() - last_log_time)
@@ -385,6 +430,9 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
                         step=global_step,
                         epoch=epoch,
                         metrics=metrics,
+                        training_state=capture_training_state(
+                            scaler, next_batch_in_epoch
+                        ),
                     )
 
             if is_main and global_step % train_cfg.save_every == 0:
@@ -397,6 +445,9 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
                     step=global_step,
                     epoch=epoch,
                     metrics={"best_val_loss": best_val},
+                    training_state=capture_training_state(
+                        scaler, next_batch_in_epoch
+                    ),
                 )
                 append_metric(
                     metrics_path,
@@ -407,6 +458,8 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
                 )
         if global_step >= total_steps:
             break
+        resume_batch_in_epoch = 0
+        next_batch_in_epoch = 0
 
     final_path = output_dir / "last.pt"
     if is_main:
@@ -420,8 +473,11 @@ def train(config: ExperimentConfig, resume: str | None = None) -> Path:
             optimizer,
             scheduler,
             step=global_step,
-            epoch=train_cfg.epochs,
+            epoch=last_epoch,
             metrics=final_metrics,
+            training_state=capture_training_state(
+                scaler, next_batch_in_epoch
+            ),
         )
         append_metric(
             metrics_path,

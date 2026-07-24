@@ -24,11 +24,7 @@ def test_initial_history_is_padded_without_separate_dataset():
         config.map_size,
     )
     assert first["agent_x"].shape == (config.history_frames, config.agents_per_frame)
-    assert first["action_mask"].shape == (
-        config.history_frames,
-        config.agents_per_frame,
-        4,
-    )
+    assert "action_mask" not in first
     assert first["one_hop_ctg"].shape == (
         config.history_frames,
         config.agents_per_frame,
@@ -105,3 +101,19 @@ def test_dataset_retains_sampled_final_goal_wait_targets(tmp_path):
     )
     assert len(all_waits) == 10
     assert all_waits._resolve_index(4) == (0, 4, 0)
+
+
+def test_builder_prefers_precomputed_24_slot_tracking():
+    config = ModelConfig(max_neighbors=24, agent_latents=25)
+    episode = generate_synthetic_episode(seed=17, num_agents=3, max_steps=4)
+    episode.positions[:, 1] = episode.positions[:, 0] + np.asarray([0, 1], dtype=np.int16)
+    frames = episode.positions.shape[0]
+    episode.neighbor_ids_24 = np.full((frames, 3, 24), -1, dtype=np.int16)
+    episode.neighbor_valid_24 = np.zeros((frames, 3, 24), dtype=bool)
+    episode.track_reset_24 = np.zeros((frames, 3, 24), dtype=bool)
+    episode.neighbor_ids_24[:, 0, 7] = 1
+    episode.neighbor_valid_24[:, 0, 7] = True
+    sample = SequenceSampleBuilder(config).build(episode, ego_id=0, time_step=0)
+    current = -1
+    assert sample["agent_valid"][current, 7]
+    assert not sample["agent_valid"][current, 0]

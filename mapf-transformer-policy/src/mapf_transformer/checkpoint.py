@@ -19,6 +19,7 @@ def save_checkpoint(
     step: int = 0,
     epoch: int = 0,
     metrics: dict[str, float] | None = None,
+    training_state: dict[str, Any] | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +31,7 @@ def save_checkpoint(
         "step": int(step),
         "epoch": int(epoch),
         "metrics": metrics or {},
+        "training_state": training_state or {},
     }
     if optimizer is not None:
         payload["optimizer_state"] = optimizer.state_dict()
