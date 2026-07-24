@@ -5,12 +5,8 @@ model:
   distance_encoding: exact
   distance_buckets: 64
   max_neighbors: 24
-  agent_latents: 25
   agent_local_layers: 1
-  agent_set_layers: 1
-  agent_attention_mode: distance_graph
-  graph_radius: 3
-  history_frames: 8
+  history_frames: 10
   d_model: 256
   n_heads: 8
   temporal_layers: 8
@@ -23,7 +19,7 @@ model:
 training:
   train_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
   val_manifest: pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
-  output_dir: mapf-transformer-policy/runs/agent_query_map32_agent25_history8_graph_r3_tracking24_exact_raw_1h
+  output_dir: mapf-transformer-policy/runs/agent25_map32_history10_random
   batch_size: 16
   val_batch_size: 128
   gradient_accumulation_steps: 16

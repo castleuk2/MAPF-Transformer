@@ -4,9 +4,7 @@ model:
   map_latents: 32
   one_hop_ctg: true
   max_neighbors: 24
-  agent_latents: 32
   agent_local_layers: 1
-  agent_set_layers: 1
   history_frames: 8
   d_model: 256
   n_heads: 8

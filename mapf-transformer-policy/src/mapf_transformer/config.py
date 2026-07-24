@@ -12,18 +12,14 @@ class ModelConfig:
     """Architecture and input-layout configuration.
 
     Default temporal layout:
-    8 frames * (32 agent-set tokens + 1 transition) + 1 ACT query = 265 tokens.
+    8 frames * (25 agent tokens + 1 transition) + 1 ACT query = 209 tokens.
     """
 
     map_size: int = 15
     map_latents: int = 16
     one_hop_ctg: bool = True
     max_neighbors: int = 24
-    agent_latents: int = 32
     agent_local_layers: int = 1
-    agent_set_layers: int = 1
-    agent_attention_mode: str = "dense"
-    graph_radius: int = 3
     history_frames: int = 8
     d_model: int = 256
     n_heads: int = 8
@@ -46,11 +42,7 @@ class ModelConfig:
 
     @property
     def tokens_per_frame(self) -> int:
-        return self.agent_latents + 1
-
-    @property
-    def interaction_latents(self) -> int:
-        return self.agent_latents - self.agents_per_frame
+        return self.agents_per_frame + 1
 
     @property
     def context_tokens(self) -> int:
@@ -75,14 +67,8 @@ class ModelConfig:
             )
         if self.max_neighbors < 0:
             raise ValueError("max_neighbors must be non-negative")
-        if self.agent_latents < self.agents_per_frame:
-            raise ValueError("agent_latents must be at least agents_per_frame")
-        if self.agent_local_layers <= 0 or self.agent_set_layers <= 0:
-            raise ValueError("agent_local_layers and agent_set_layers must be positive")
-        if self.agent_attention_mode not in {"dense", "distance_graph"}:
-            raise ValueError("agent_attention_mode must be 'dense' or 'distance_graph'")
-        if self.graph_radius <= 0:
-            raise ValueError("graph_radius must be positive")
+        if self.agent_local_layers <= 0:
+            raise ValueError("agent_local_layers must be positive")
         if self.history_frames <= 0:
             raise ValueError("history_frames must be positive")
         if self.d_model % self.n_heads != 0:

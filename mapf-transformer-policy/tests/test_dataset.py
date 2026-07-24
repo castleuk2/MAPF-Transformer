@@ -104,7 +104,7 @@ def test_dataset_retains_sampled_final_goal_wait_targets(tmp_path):
 
 
 def test_builder_prefers_precomputed_24_slot_tracking():
-    config = ModelConfig(max_neighbors=24, agent_latents=25)
+    config = ModelConfig(max_neighbors=24)
     episode = generate_synthetic_episode(seed=17, num_agents=3, max_steps=4)
     episode.positions[:, 1] = episode.positions[:, 0] + np.asarray([0, 1], dtype=np.int16)
     frames = episode.positions.shape[0]
