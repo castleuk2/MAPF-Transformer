@@ -300,6 +300,45 @@ class TransitionTokenizer(nn.Module):
         return self.norm(x)
 
 
+class AgentInteractionLatents(nn.Module):
+    """Learned relationship queries that summarize a frame's valid entities."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        d = config.d_model
+        self.queries = nn.Parameter(torch.empty(1, config.interaction_latents, d))
+        nn.init.normal_(self.queries, std=0.02)
+        self.query_norm = nn.LayerNorm(d)
+        self.agent_norm = nn.LayerNorm(d)
+        self.cross_attention = nn.MultiheadAttention(
+            d,
+            config.n_heads,
+            dropout=config.dropout,
+            batch_first=True,
+        )
+        self.ff_norm = nn.LayerNorm(d)
+        self.ff = FeedForward(d, config.mlp_ratio, config.dropout)
+        self.output_norm = nn.LayerNorm(d)
+
+    def forward(
+        self,
+        agent_tokens: torch.Tensor,
+        agent_valid: torch.Tensor,
+    ) -> torch.Tensor:
+        queries = self.queries.expand(agent_tokens.shape[0], -1, -1)
+        normalized_agents = self.agent_norm(agent_tokens)
+        attended, _ = self.cross_attention(
+            self.query_norm(queries),
+            normalized_agents,
+            normalized_agents,
+            key_padding_mask=~agent_valid.bool(),
+            need_weights=False,
+        )
+        x = queries + attended
+        x = x + self.ff(self.ff_norm(x))
+        return self.output_norm(x)
+
+
 class TemporalBlock(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
@@ -343,6 +382,9 @@ class MAPFTransformer(nn.Module):
         self.map_encoder = SpatialMapEncoder(config)
         self.agent_tokenizer = AgentLocalEncoder(config)
         self.agent_map_fusion = AgentMapFusion(config)
+        self.interaction_encoder = (
+            AgentInteractionLatents(config) if config.interaction_latents > 0 else None
+        )
         self.transition_tokenizer = TransitionTokenizer(config)
 
         self.frame_position = nn.Embedding(config.history_frames, config.d_model)
@@ -409,23 +451,37 @@ class MAPFTransformer(nn.Module):
         conditioned_agents = conditioned_agents.masked_fill(
             ~agent_valid.bool().unsqueeze(-1), 0.0
         )
+        frame_parts = [conditioned_agents]
+        valid_parts = [agent_valid.bool()]
+        if self.interaction_encoder is not None:
+            interactions = self.interaction_encoder(conditioned_agents, agent_valid)
+            frame_parts.append(interactions)
+            valid_parts.append(
+                torch.ones(
+                    conditioned_agents.shape[0],
+                    self.config.interaction_latents,
+                    dtype=torch.bool,
+                    device=conditioned_agents.device,
+                )
+            )
         transition = self.transition_tokenizer(
             previous_action,
             actual_move,
             outcome,
             visible_count,
         ).unsqueeze(1)
-        frame_tokens = torch.cat([conditioned_agents, transition], dim=1)
+        frame_parts.append(transition)
+        frame_tokens = torch.cat(frame_parts, dim=1)
+        valid_parts.append(
+            torch.ones(
+                conditioned_agents.shape[0],
+                1,
+                dtype=torch.bool,
+                device=conditioned_agents.device,
+            )
+        )
         frame_token_valid = torch.cat(
-            [
-                agent_valid.bool(),
-                torch.ones(
-                    conditioned_agents.shape[0],
-                    1,
-                    dtype=torch.bool,
-                    device=conditioned_agents.device,
-                ),
-            ],
+            valid_parts,
             dim=1,
         )
         return frame_tokens, frame_token_valid

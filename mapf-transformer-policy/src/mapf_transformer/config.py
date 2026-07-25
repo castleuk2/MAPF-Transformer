@@ -12,7 +12,8 @@ class ModelConfig:
     """Architecture and input-layout configuration.
 
     Temporal layout:
-    history_frames * (25 agent tokens + 1 transition) + 1 ACT query.
+    history_frames * (25 agent tokens + interaction_latents + 1 transition)
+    + 1 ACT query.
     """
 
     map_size: int = 15
@@ -20,6 +21,7 @@ class ModelConfig:
     one_hop_ctg: bool = True
     max_neighbors: int = 24
     agent_local_layers: int = 1
+    interaction_latents: int = 0
     history_frames: int = 8
     d_model: int = 256
     n_heads: int = 8
@@ -42,7 +44,7 @@ class ModelConfig:
 
     @property
     def tokens_per_frame(self) -> int:
-        return self.agents_per_frame + 1
+        return self.agents_per_frame + self.interaction_latents + 1
 
     @property
     def context_tokens(self) -> int:
@@ -69,6 +71,8 @@ class ModelConfig:
             raise ValueError("max_neighbors must be non-negative")
         if self.agent_local_layers <= 0:
             raise ValueError("agent_local_layers must be positive")
+        if self.interaction_latents < 0:
+            raise ValueError("interaction_latents must be non-negative")
         if self.history_frames <= 0:
             raise ValueError("history_frames must be positive")
         if self.d_model % self.n_heads != 0:

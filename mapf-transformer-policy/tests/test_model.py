@@ -111,3 +111,26 @@ def test_temporal_mask_is_bidirectional_within_frame_and_causal_across_frames():
     assert not mask[p, 0]       # A newer frame can read an older frame.
     assert not mask[act, 0]     # ACT reads all valid temporal context.
     assert mask[0, act]         # Ordinary tokens cannot read ACT.
+
+
+def test_interaction25_history5_builds_exactly_256_tokens_and_receives_gradients():
+    config = _small_config(history_frames=5, interaction_latents=25)
+    episode = generate_synthetic_episode(seed=11, num_agents=3, max_steps=4)
+    sample = SequenceSampleBuilder(config).build(episode, ego_id=0, time_step=0)
+    batch = {key: value.unsqueeze(0) for key, value in sample.items()}
+    model = MAPFTransformer(config)
+
+    frames, _, token_valid = model.encode_frames(batch)
+    assert config.agents_per_frame == 25
+    assert config.tokens_per_frame == 51
+    assert config.context_tokens == 256
+    assert frames.shape[1:3] == (5, 51)
+    assert token_valid.shape[1:] == (5, 51)
+    assert model.interaction_encoder is not None
+    assert model.interaction_encoder.queries.shape == (1, 25, config.d_model)
+
+    output = model(batch)
+    assert output.loss is not None
+    output.loss.backward()
+    assert model.interaction_encoder.queries.grad is not None
+    assert model.interaction_encoder.cross_attention.in_proj_weight.grad is not None
