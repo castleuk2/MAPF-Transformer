@@ -134,3 +134,38 @@ def test_interaction25_history5_builds_exactly_256_tokens_and_receives_gradients
     output.loss.backward()
     assert model.interaction_encoder.queries.grad is not None
     assert model.interaction_encoder.cross_attention.in_proj_weight.grad is not None
+
+
+def test_graph_hybrid_masks_only_distant_same_frame_agent_pairs():
+    config = _small_config(
+        history_frames=5,
+        interaction_latents=25,
+        same_frame_graph_attention=True,
+        graph_radius=3,
+        graph_temporal_layers=1,
+    )
+    model = MAPFTransformer(config)
+    frame_valid = torch.ones((1, 5), dtype=torch.bool)
+    token_valid = torch.ones((1, 5, config.tokens_per_frame), dtype=torch.bool)
+    agent_x = torch.zeros((1, 5, config.agents_per_frame), dtype=torch.long)
+    agent_y = torch.zeros_like(agent_x)
+    agent_x[:, :, 1] = 3
+    agent_x[:, :, 2] = 4
+
+    graph_mask, _ = model._build_temporal_attention_mask(
+        frame_valid,
+        token_valid,
+        agent_x=agent_x,
+        agent_y=agent_y,
+        apply_same_frame_graph=True,
+    )
+    graph_mask = graph_mask[0]  # First attention head.
+    p = config.tokens_per_frame
+    interaction_index = config.agents_per_frame
+    transition_index = p - 1
+
+    assert not graph_mask[0, 1]  # Manhattan distance 3 is connected.
+    assert graph_mask[0, 2]      # Manhattan distance 4 is disconnected.
+    assert not graph_mask[0, interaction_index]
+    assert not graph_mask[0, transition_index]
+    assert not graph_mask[p, 2]  # Cross-frame causal attention stays dense.

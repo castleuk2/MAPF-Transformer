@@ -22,6 +22,9 @@ class ModelConfig:
     max_neighbors: int = 24
     agent_local_layers: int = 1
     interaction_latents: int = 0
+    same_frame_graph_attention: bool = False
+    graph_radius: int = 3
+    graph_temporal_layers: int = 0
     history_frames: int = 8
     d_model: int = 256
     n_heads: int = 8
@@ -73,6 +76,14 @@ class ModelConfig:
             raise ValueError("agent_local_layers must be positive")
         if self.interaction_latents < 0:
             raise ValueError("interaction_latents must be non-negative")
+        if self.graph_radius < 0:
+            raise ValueError("graph_radius must be non-negative")
+        if not 0 <= self.graph_temporal_layers <= self.temporal_layers:
+            raise ValueError("graph_temporal_layers must be within [0, temporal_layers]")
+        if self.same_frame_graph_attention and self.graph_temporal_layers == 0:
+            raise ValueError(
+                "same_frame_graph_attention=true requires graph_temporal_layers > 0"
+            )
         if self.history_frames <= 0:
             raise ValueError("history_frames must be positive")
         if self.d_model % self.n_heads != 0:

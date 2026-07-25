@@ -542,6 +542,9 @@ class MAPFTransformer(nn.Module):
         self,
         frame_valid: torch.Tensor,
         frame_token_valid: torch.Tensor | None = None,
+        agent_x: torch.Tensor | None = None,
+        agent_y: torch.Tensor | None = None,
+        apply_same_frame_graph: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Builds block-causal mask: bidirectional within frame, causal across frames."""
         b, f = frame_valid.shape
@@ -571,6 +574,23 @@ class MAPFTransformer(nn.Module):
             dim=1,
         )
         masks = base.unsqueeze(0).expand(b, -1, -1).clone()
+        if apply_same_frame_graph:
+            expected_agent_shape = (b, f, self.config.agents_per_frame)
+            if agent_x is None or agent_y is None:
+                raise ValueError("Graph attention requires agent_x and agent_y")
+            if agent_x.shape != expected_agent_shape or agent_y.shape != expected_agent_shape:
+                raise ValueError(
+                    f"Graph coordinates must have shape {expected_agent_shape}"
+                )
+            radius = self.config.graph_radius
+            for frame_index in range(f):
+                start = frame_index * p
+                stop = start + self.config.agents_per_frame
+                x = agent_x[:, frame_index].long()
+                y = agent_y[:, frame_index].long()
+                distance = (x[:, :, None] - x[:, None, :]).abs()
+                distance += (y[:, :, None] - y[:, None, :]).abs()
+                masks[:, start:stop, start:stop] |= distance > radius
         invalid_keys = ~token_valid
         masks |= invalid_keys.unsqueeze(1).expand(-1, total_tokens, -1)
 
@@ -590,6 +610,8 @@ class MAPFTransformer(nn.Module):
         frame_valid: torch.Tensor,
         targets: torch.Tensor | None = None,
         frame_token_valid: torch.Tensor | None = None,
+        agent_x: torch.Tensor | None = None,
+        agent_y: torch.Tensor | None = None,
     ) -> MAPFTransformerOutput:
         if frame_tokens.ndim != 4:
             raise ValueError("frame_tokens must have shape [B,F,P,D]")
@@ -608,12 +630,27 @@ class MAPFTransformer(nn.Module):
         temporal = temporal.reshape(b, f * p, d)
         act = (self.act_query + self.act_modality).expand(b, -1, -1)
         x = torch.cat([temporal, act], dim=1)
-        attention_mask, token_valid = self._build_temporal_attention_mask(
+        dense_attention_mask, token_valid = self._build_temporal_attention_mask(
             frame_valid.bool(),
             frame_token_valid,
         )
+        graph_attention_mask = None
+        if self.config.same_frame_graph_attention:
+            graph_attention_mask, _ = self._build_temporal_attention_mask(
+                frame_valid.bool(),
+                frame_token_valid,
+                agent_x=agent_x,
+                agent_y=agent_y,
+                apply_same_frame_graph=True,
+            )
         x = x.masked_fill(~token_valid.unsqueeze(-1), 0.0)
-        for block in self.temporal_blocks:
+        for layer_index, block in enumerate(self.temporal_blocks):
+            attention_mask = (
+                graph_attention_mask
+                if graph_attention_mask is not None
+                and layer_index < self.config.graph_temporal_layers
+                else dense_attention_mask
+            )
             x = block(x, attention_mask, token_valid)
         act_state = self.final_norm(x[:, -1])
         logits = self.action_head(act_state)
@@ -640,6 +677,8 @@ class MAPFTransformer(nn.Module):
             batch["frame_valid"],
             targets=targets,
             frame_token_valid=frame_token_valid,
+            agent_x=batch["agent_x"],
+            agent_y=batch["agent_y"],
         )
         output.map_reconstruction_logits = reconstruction
 
