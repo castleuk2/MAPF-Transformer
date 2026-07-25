@@ -1,5 +1,6 @@
 import pytest
 import torch
+from torch import nn
 
 from mapf_transformer.config import ModelConfig
 from mapf_transformer.dataset import SequenceSampleBuilder
@@ -169,3 +170,44 @@ def test_graph_hybrid_masks_only_distant_same_frame_agent_pairs():
     assert not graph_mask[0, interaction_index]
     assert not graph_mask[0, transition_index]
     assert not graph_mask[p, 2]  # Cross-frame causal attention stays dense.
+
+
+def test_graph_hybrid_routes_graph_mask_to_only_the_configured_early_layers():
+    config = _small_config(
+        history_frames=2,
+        temporal_layers=3,
+        same_frame_graph_attention=True,
+        graph_radius=3,
+        graph_temporal_layers=2,
+    )
+    model = MAPFTransformer(config)
+
+    class CaptureBlock(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.mask = None
+
+        def forward(self, x, attention_mask, token_valid):
+            self.mask = attention_mask.detach().clone()
+            return x
+
+    captures = nn.ModuleList([CaptureBlock() for _ in range(3)])
+    model.temporal_blocks = captures
+    p = config.tokens_per_frame
+    frames = torch.zeros((1, 2, p, config.d_model))
+    frame_valid = torch.ones((1, 2), dtype=torch.bool)
+    token_valid = torch.ones((1, 2, p), dtype=torch.bool)
+    agent_x = torch.zeros((1, 2, config.agents_per_frame), dtype=torch.long)
+    agent_y = torch.zeros_like(agent_x)
+    agent_x[:, :, 1] = 4
+
+    model.forward_encoded_frames(
+        frames,
+        frame_valid,
+        frame_token_valid=token_valid,
+        agent_x=agent_x,
+        agent_y=agent_y,
+    )
+    assert captures[0].mask[0, 0, 1]
+    assert captures[1].mask[0, 0, 1]
+    assert not captures[2].mask[0, 0, 1]
