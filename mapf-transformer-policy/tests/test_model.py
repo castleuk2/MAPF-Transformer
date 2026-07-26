@@ -46,6 +46,33 @@ def test_model_forward_and_backward():
     assert model.agent_tokenizer.blocks[0].cross_attention.in_proj_weight.grad is not None
 
 
+def test_graph_only_uses_current_frame_ego_token_without_temporal_transformer():
+    config = _small_config(
+        graph_only=True,
+        history_frames=1,
+        temporal_layers=0,
+    )
+    episode = generate_synthetic_episode(seed=13, num_agents=3, max_steps=4)
+    sample = SequenceSampleBuilder(config).build(episode, ego_id=0, time_step=2)
+    batch = {key: value.unsqueeze(0) for key, value in sample.items()}
+    model = MAPFTransformer(config)
+
+    frames, _, token_valid = model.encode_frames(batch)
+    assert frames.shape[1:3] == (1, 25)
+    assert token_valid.shape[1:] == (1, 25)
+    assert config.context_tokens == 25
+    assert model.transition_tokenizer is None
+    assert len(model.temporal_blocks) == 0
+    assert model.graph_only_block is not None
+
+    output = model(batch)
+    assert output.logits.shape == (1, 5)
+    assert torch.isfinite(output.loss)
+    output.loss.backward()
+    assert model.graph_only_block.attention.in_proj_weight.grad is not None
+    assert model.action_head.weight.grad is not None
+
+
 def test_eval_can_report_action_reconstruction_and_total_losses():
     config = _small_config(
         aux_map_reconstruction=True,

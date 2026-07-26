@@ -22,6 +22,7 @@ class ModelConfig:
     max_neighbors: int = 24
     agent_local_layers: int = 1
     interaction_latents: int = 0
+    graph_only: bool = False
     same_frame_graph_attention: bool = False
     graph_radius: int = 3
     graph_temporal_layers: int = 0
@@ -47,10 +48,14 @@ class ModelConfig:
 
     @property
     def tokens_per_frame(self) -> int:
+        if self.graph_only:
+            return self.agents_per_frame
         return self.agents_per_frame + self.interaction_latents + 1
 
     @property
     def context_tokens(self) -> int:
+        if self.graph_only:
+            return self.agents_per_frame
         return self.history_frames * self.tokens_per_frame + 1
 
     @property
@@ -76,6 +81,17 @@ class ModelConfig:
             raise ValueError("agent_local_layers must be positive")
         if self.interaction_latents < 0:
             raise ValueError("interaction_latents must be non-negative")
+        if self.graph_only:
+            if self.history_frames != 1:
+                raise ValueError("graph_only requires history_frames=1")
+            if self.interaction_latents != 0:
+                raise ValueError("graph_only requires interaction_latents=0")
+            if self.temporal_layers != 0:
+                raise ValueError("graph_only requires temporal_layers=0")
+            if self.graph_temporal_layers != 0 or self.same_frame_graph_attention:
+                raise ValueError(
+                    "graph_only uses its own graph layer; temporal graph options must be disabled"
+                )
         if self.graph_radius < 0:
             raise ValueError("graph_radius must be non-negative")
         if not 0 <= self.graph_temporal_layers <= self.temporal_layers:

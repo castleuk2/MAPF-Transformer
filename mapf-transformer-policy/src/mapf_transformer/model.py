@@ -385,17 +385,26 @@ class MAPFTransformer(nn.Module):
         self.interaction_encoder = (
             AgentInteractionLatents(config) if config.interaction_latents > 0 else None
         )
-        self.transition_tokenizer = TransitionTokenizer(config)
-
-        self.frame_position = nn.Embedding(config.history_frames, config.d_model)
-        self.within_frame_position = nn.Embedding(config.tokens_per_frame, config.d_model)
-        self.temporal_modality = nn.Parameter(torch.zeros(1, 1, 1, config.d_model))
-        self.act_query = nn.Parameter(torch.empty(1, 1, config.d_model))
-        nn.init.normal_(self.act_query, std=0.02)
-        self.act_modality = nn.Parameter(torch.zeros(1, 1, config.d_model))
-        self.temporal_blocks = nn.ModuleList(
-            [TemporalBlock(config) for _ in range(config.temporal_layers)]
-        )
+        self.transition_tokenizer = None if config.graph_only else TransitionTokenizer(config)
+        if config.graph_only:
+            self.graph_only_block = TemporalBlock(config)
+            self.frame_position = None
+            self.within_frame_position = None
+            self.temporal_modality = None
+            self.act_query = None
+            self.act_modality = None
+            self.temporal_blocks = nn.ModuleList()
+        else:
+            self.graph_only_block = None
+            self.frame_position = nn.Embedding(config.history_frames, config.d_model)
+            self.within_frame_position = nn.Embedding(config.tokens_per_frame, config.d_model)
+            self.temporal_modality = nn.Parameter(torch.zeros(1, 1, 1, config.d_model))
+            self.act_query = nn.Parameter(torch.empty(1, 1, config.d_model))
+            nn.init.normal_(self.act_query, std=0.02)
+            self.act_modality = nn.Parameter(torch.zeros(1, 1, config.d_model))
+            self.temporal_blocks = nn.ModuleList(
+                [TemporalBlock(config) for _ in range(config.temporal_layers)]
+            )
         self.final_norm = nn.LayerNorm(config.d_model)
         self.action_head = nn.Linear(config.d_model, config.num_actions)
 
@@ -464,22 +473,23 @@ class MAPFTransformer(nn.Module):
                     device=conditioned_agents.device,
                 )
             )
-        transition = self.transition_tokenizer(
-            previous_action,
-            actual_move,
-            outcome,
-            visible_count,
-        ).unsqueeze(1)
-        frame_parts.append(transition)
-        frame_tokens = torch.cat(frame_parts, dim=1)
-        valid_parts.append(
-            torch.ones(
-                conditioned_agents.shape[0],
-                1,
-                dtype=torch.bool,
-                device=conditioned_agents.device,
+        if self.transition_tokenizer is not None:
+            transition = self.transition_tokenizer(
+                previous_action,
+                actual_move,
+                outcome,
+                visible_count,
+            ).unsqueeze(1)
+            frame_parts.append(transition)
+            valid_parts.append(
+                torch.ones(
+                    conditioned_agents.shape[0],
+                    1,
+                    dtype=torch.bool,
+                    device=conditioned_agents.device,
+                )
             )
-        )
+        frame_tokens = torch.cat(frame_parts, dim=1)
         frame_token_valid = torch.cat(
             valid_parts,
             dim=1,
@@ -623,6 +633,41 @@ class MAPFTransformer(nn.Module):
         )
         if (f, p, d) != expected:
             raise ValueError(f"Unexpected frame token shape: {(f, p, d)} vs {expected}")
+
+        if self.config.graph_only:
+            if agent_x is None or agent_y is None:
+                raise ValueError("graph_only requires agent_x and agent_y")
+            token_valid = frame_token_valid[:, 0].bool()
+            x = frame_tokens[:, 0]
+            coordinates_x = agent_x[:, 0].long()
+            coordinates_y = agent_y[:, 0].long()
+            distance = (coordinates_x[:, :, None] - coordinates_x[:, None, :]).abs()
+            distance += (coordinates_y[:, :, None] - coordinates_y[:, None, :]).abs()
+            attention_mask = distance > self.config.graph_radius
+            attention_mask |= (~token_valid).unsqueeze(1)
+            invalid_queries = ~token_valid
+            identity = torch.eye(p, dtype=torch.bool, device=x.device).unsqueeze(0)
+            attention_mask = torch.where(
+                invalid_queries.unsqueeze(-1),
+                ~identity,
+                attention_mask,
+            )
+            attention_mask = attention_mask.repeat_interleave(
+                self.config.n_heads, dim=0
+            )
+            x = self.graph_only_block(x, attention_mask, token_valid)
+            action_state = self.final_norm(x[:, self.config.ego_slot])
+            logits = self.action_head(action_state)
+            action_loss = (
+                nnf.cross_entropy(logits, targets.long())
+                if targets is not None
+                else None
+            )
+            return MAPFTransformerOutput(
+                logits=logits,
+                loss=action_loss,
+                action_loss=action_loss,
+            )
 
         frame_pos = self.frame_position(self.frame_ids).reshape(1, f, p, d)
         within_pos = self.within_frame_position(self.within_ids).reshape(1, f, p, d)
