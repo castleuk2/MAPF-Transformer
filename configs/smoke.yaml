@@ -1,0 +1,39 @@
+model:
+  d_model: 64
+  patch_hidden_dim: 96
+  num_heads: 4
+  num_layers: 1
+  dropout: 0.0
+  position_encoding: learned
+  use_relative_position_bias: true
+  use_connectivity_bias: true
+  include_port_openings: true
+  include_outer_edge_mask: true
+
+loss:
+  bce_weight: 1.0
+  dice_weight: 0.25
+  occupied_pos_weight: 2.0
+  boundary_pixel_weight: 1.5
+
+dataset:
+  kind: synthetic
+  train_samples: 64
+  val_samples: 24
+  seed: 3
+  pattern_mix: [walls, corridors, mixed]
+
+training:
+  output_dir: runs/smoke
+  epochs: 1
+  batch_size: 8
+  val_batch_size: 8
+  learning_rate: 0.001
+  warmup_steps: 0
+  max_steps: 4
+  num_workers: 0
+  device: cpu
+  amp: false
+  seed: 4
+  log_interval: 1
+  save_visualizations: 2
