@@ -36,6 +36,16 @@ class TrainResult:
     global_step: int
 
 
+def _valid_halo_maps(batch: dict[str, torch.Tensor], device: torch.device) -> torch.Tensor:
+    if "halo_maps" in batch:
+        maps = batch["halo_maps"]
+        valid = batch["frame_valid"].bool()
+        maps = maps[valid]
+    else:
+        maps = batch["halo_map"]
+    return maps.to(device=device, dtype=torch.long, non_blocking=True)
+
+
 def _checkpoint_payload(
     *,
     model: StructuredMapTransformer,
@@ -73,7 +83,7 @@ def evaluate_model(
     accumulator = MetricAccumulator()
     visualized = False
     for batch in loader:
-        halo_maps = batch["halo_map"].to(device=device, dtype=torch.long, non_blocking=True)
+        halo_maps = _valid_halo_maps(batch, device)
         output = model(halo_maps)
         loss = criterion(output, halo_maps)
         metrics = binary_reconstruction_metrics(
@@ -121,11 +131,10 @@ def train_experiment(config: ExperimentConfig) -> TrainResult:
         planned_steps = min(planned_steps, config.training.max_steps)
     scheduler = LambdaLR(
         optimizer,
-        lr_lambda=lambda step: cosine_with_warmup(
-            step,
-            warmup_steps=config.training.warmup_steps,
+        lr_lambda=(lambda step: cosine_with_warmup(
+            step, warmup_steps=config.training.warmup_steps,
             total_steps=max(planned_steps, 1),
-        ),
+        )) if config.training.use_scheduler else (lambda step: 1.0),
     )
 
     amp_enabled = config.training.amp and device.type == "cuda"
@@ -143,11 +152,13 @@ def train_experiment(config: ExperimentConfig) -> TrainResult:
     stop_training = False
 
     for epoch in range(config.training.epochs):
+        if hasattr(train_loader.batch_sampler, "set_epoch"):
+            train_loader.batch_sampler.set_epoch(epoch + 1)
         model.train()
         epoch_accumulator = MetricAccumulator()
         start_time = time.time()
         for batch_index, batch in enumerate(train_loader):
-            halo_maps = batch["halo_map"].to(device=device, dtype=torch.long, non_blocking=True)
+            halo_maps = _valid_halo_maps(batch, device)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                 output = model(halo_maps)
@@ -175,8 +186,8 @@ def train_experiment(config: ExperimentConfig) -> TrainResult:
                 append_jsonl(metrics_path, record)
                 print(
                     f"epoch={epoch + 1}/{config.training.epochs} step={global_step} "
-                    f"loss={loss_values['loss']:.5f} bce={loss_values['bce']:.5f} "
-                    f"dice={loss_values['dice']:.5f}"
+                    f"loss={loss_values['loss']:.5f} cell_ce={loss_values['cell_ce']:.5f} "
+                    f"bce={loss_values['bce']:.5f} dice={loss_values['dice']:.5f}"
                 )
 
             if config.training.max_steps is not None and global_step >= config.training.max_steps:
@@ -201,7 +212,7 @@ def train_experiment(config: ExperimentConfig) -> TrainResult:
                 val_loader,
                 criterion,
                 device,
-                include_reachability=True,
+                include_reachability=config.training.include_reachability,
                 visualization_path=visualization_path if config.training.save_visualizations > 0 else None,
                 visualization_count=config.training.save_visualizations,
             )
@@ -209,9 +220,13 @@ def train_experiment(config: ExperimentConfig) -> TrainResult:
                 metrics_path,
                 {"event": "validation", "epoch": epoch, "step": global_step, **val_metrics},
             )
+            reachability_text = (
+                f" reachability_iou={val_metrics['reachability_iou']:.4f}"
+                if "reachability_iou" in val_metrics else ""
+            )
             print(
                 f"validation loss={val_metrics['loss']:.5f} occupied_iou={val_metrics['occupied_iou']:.4f} "
-                f"boundary_f1={val_metrics['boundary_f1']:.4f} reachability_iou={val_metrics['reachability_iou']:.4f}"
+                f"boundary_f1={val_metrics['boundary_f1']:.4f}{reachability_text}"
             )
             if val_metrics["loss"] < best_metric:
                 best_metric = val_metrics["loss"]

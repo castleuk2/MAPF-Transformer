@@ -1,0 +1,65 @@
+model:
+  halo_size: 17
+  core_size: 15
+  patch_size: 3
+  num_cell_states: 2
+  free_state: 0
+  occupied_state: 1
+  unknown_state: null
+  d_model: 256
+  patch_hidden_dim: 256
+  num_heads: 8
+  num_layers: 1
+  ffn_multiplier: 4
+  dropout: 0.1
+  position_encoding: learned
+  use_center_embedding: true
+  use_relative_position_bias: true
+  use_connectivity_bias: true
+  include_port_openings: true
+  include_outer_edge_mask: true
+  include_port_known_mask: false
+  final_norm: true
+  reconstruct_ports: false
+  reconstruction_classes: 2
+
+loss:
+  mode: cell_ce
+  bce_weight: 1.0
+  dice_weight: 0.0
+  port_weight: 0.0
+  occupied_pos_weight: 1.0
+  boundary_pixel_weight: 1.0
+  eps: 0.000001
+
+dataset:
+  kind: policy_history
+  train_path: data/policy_exposure_17x17/train/manifest.jsonl
+  val_path: data/policy_exposure_17x17/val/manifest.jsonl
+  eval_path: data/policy_exposure_17x17/eval/manifest.jsonl
+  history_frames: 5
+  min_history_frames: 1
+  goal_wait_keep_ratio: 0.2
+  train_history_augmentation: true
+  seed: 42
+
+training:
+  output_dir: runs/policy_exposure_structured_25_ce
+  epochs: 3
+  batch_size: 512
+  val_batch_size: 512
+  learning_rate: 0.0003
+  weight_decay: 0.1
+  warmup_steps: 0
+  use_scheduler: false
+  max_steps: null
+  grad_clip_norm: 0.0
+  num_workers: 12
+  device: cuda:0
+  amp: false
+  seed: 42
+  log_interval: 200
+  eval_interval_epochs: 1
+  checkpoint_interval_epochs: 1
+  save_visualizations: 8
+  include_reachability: false

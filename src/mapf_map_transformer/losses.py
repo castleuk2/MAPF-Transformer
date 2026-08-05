@@ -14,6 +14,7 @@ from .model import MapEncoderOutput
 @dataclass(slots=True)
 class ReconstructionLossOutput:
     total: torch.Tensor
+    cell_ce: torch.Tensor
     bce: torch.Tensor
     dice: torch.Tensor
     port: torch.Tensor
@@ -21,6 +22,7 @@ class ReconstructionLossOutput:
     def detached(self) -> dict[str, float]:
         return {
             "loss": float(self.total.detach().cpu()),
+            "cell_ce": float(self.cell_ce.detach().cpu()),
             "bce": float(self.bce.detach().cpu()),
             "dice": float(self.dice.detach().cpu()),
             "port": float(self.port.detach().cpu()),
@@ -54,6 +56,16 @@ class MapReconstructionLoss(nn.Module):
         if halo_maps.ndim == 2:
             halo_maps = halo_maps.unsqueeze(0)
         target_states = extract_core(halo_maps).to(device=output.reconstruction_logits.device)
+        if self.config.mode == "cell_ce":
+            logits = output.reconstruction_logits
+            if logits.ndim != 4 or logits.shape[-1] != self.model_config.num_cell_states:
+                raise ValueError("cell_ce expects reconstruction logits [B,H,W,num_cell_states].")
+            cell_ce = F.cross_entropy(
+                logits.reshape(-1, self.model_config.num_cell_states),
+                target_states.long().reshape(-1),
+            )
+            zero = cell_ce.new_zeros(())
+            return ReconstructionLossOutput(total=cell_ce, cell_ce=cell_ce, bce=zero, dice=zero, port=zero)
         target = target_states.eq(self.model_config.occupied_state).to(output.reconstruction_logits.dtype)
         logits = output.reconstruction_logits
 
@@ -96,4 +108,4 @@ class MapReconstructionLoss(nn.Module):
             + self.config.dice_weight * dice
             + self.config.port_weight * port
         )
-        return ReconstructionLossOutput(total=total, bce=bce, dice=dice, port=port)
+        return ReconstructionLossOutput(total=total, cell_ce=total.new_zeros(()), bce=bce, dice=dice, port=port)

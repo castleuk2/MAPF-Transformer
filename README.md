@@ -203,6 +203,22 @@ runs/map_reconstruction/
 halo_maps: uint8/int64 [N,17,17]
 ```
 
+### Policy-exposure 공정 비교
+
+기존 M8/M16/M32 Map Autoencoder와 같은 데이터 노출 및 Loss로 비교할 때는 다음 설정을 사용한다.
+
+```bash
+python train.py --config configs/policy_exposure_ce.yaml
+python evaluate_policy_exposure.py \
+  --checkpoint runs/policy_exposure_structured_25_ce/best.pt \
+  --splits val eval \
+  --output runs/policy_exposure_structured_25_ce/policy_exposure_metrics.json
+```
+
+이 경로는 Train history만 결정적으로 truncation하고, Val/Eval은 사용 가능한 전체 history를 최대 5까지
+사용한다. 중앙 15×15의 각 Cell에 Free/Obstacle 2 logits을 출력하며 기존 실험과 동일한 cell-wise mean CE로
+학습한다. 공유 설계의 weighted BCE+Dice 기본 경로는 별도로 유지된다.
+
 데이터 생성 예제:
 
 ```bash

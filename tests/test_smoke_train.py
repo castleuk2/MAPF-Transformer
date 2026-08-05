@@ -22,6 +22,7 @@ def test_two_step_training_smoke(tmp_path: Path) -> None:
             amp=False,
             log_interval=1,
             save_visualizations=0,
+            include_reachability=False,
         ),
     )
     result = train_experiment(config)

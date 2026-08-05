@@ -25,7 +25,10 @@ def binary_reconstruction_metrics(
     if halo_maps.ndim == 2:
         halo_maps = halo_maps.unsqueeze(0)
     target = extract_core(halo_maps).eq(occupied_state)
-    prediction = torch.sigmoid(logits).ge(threshold)
+    if logits.ndim == 4 and logits.shape[-1] == 2:
+        prediction = logits.argmax(dim=-1).eq(occupied_state)
+    else:
+        prediction = torch.sigmoid(logits).ge(threshold)
     target = target.to(device=prediction.device)
 
     tp = (prediction & target).sum().item()

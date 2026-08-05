@@ -17,7 +17,10 @@ def save_reconstruction_grid(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     halo = halo_maps.detach().cpu().numpy()
-    probability = torch.sigmoid(reconstruction_logits).detach().cpu().numpy()
+    if reconstruction_logits.ndim == 4 and reconstruction_logits.shape[-1] == 2:
+        probability = reconstruction_logits.softmax(dim=-1)[..., 1].detach().cpu().numpy()
+    else:
+        probability = torch.sigmoid(reconstruction_logits).detach().cpu().numpy()
     count = min(max_items, len(halo))
     if count <= 0:
         return

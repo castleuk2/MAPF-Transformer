@@ -147,7 +147,8 @@ class MapTokenRuntime:
         tensor = torch.from_numpy(self._halo_map).to(device=self.device, dtype=torch.long).unsqueeze(0)
         output = self.model(tensor)
         self._latent_tokens = output.latent_tokens[0].detach()
-        self._reconstruction = torch.sigmoid(output.reconstruction_logits[0]).detach()
+        logits = output.reconstruction_logits[0]
+        self._reconstruction = (logits.softmax(dim=-1)[..., 1] if logits.ndim == 3 else torch.sigmoid(logits)).detach()
         self.encode_count += 1
 
     def _result(self, *, reused: bool) -> RuntimeMapOutput:
@@ -192,7 +193,8 @@ class VectorizedMapTokenRuntime:
         output = self.model(batch)
         self.halo_maps = normalized
         self.latent_tokens = [token.detach() for token in output.latent_tokens]
-        probabilities = torch.sigmoid(output.reconstruction_logits)
+        probabilities = (output.reconstruction_logits.softmax(dim=-1)[..., 1]
+                         if output.reconstruction_logits.ndim == 4 else torch.sigmoid(output.reconstruction_logits))
         self.reconstructions = [item.detach() for item in probabilities]
         self.versions = [0 for _ in normalized]
         self.encode_count = len(normalized)
@@ -228,7 +230,8 @@ class VectorizedMapTokenRuntime:
             batch_np = np.stack([self.halo_maps[index] for index in changed_indices])
             batch = torch.from_numpy(batch_np).to(self.device, dtype=torch.long)
             output = self.model(batch)
-            probabilities = torch.sigmoid(output.reconstruction_logits)
+            probabilities = (output.reconstruction_logits.softmax(dim=-1)[..., 1]
+                             if output.reconstruction_logits.ndim == 4 else torch.sigmoid(output.reconstruction_logits))
             for local_index, global_index in enumerate(changed_indices):
                 self.latent_tokens[global_index] = output.latent_tokens[local_index].detach()
                 self.reconstructions[global_index] = probabilities[local_index].detach()

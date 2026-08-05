@@ -52,11 +52,13 @@ def main() -> None:
     attention = None
     if output.attention_maps:
         attention = torch.stack(output.attention_maps, dim=1).cpu().numpy()
+    probabilities = (output.reconstruction_logits.softmax(dim=-1)[..., 1]
+                     if output.reconstruction_logits.ndim == 4 else torch.sigmoid(output.reconstruction_logits))
     np.savez_compressed(
         args.output,
         halo_maps=inputs,
         latent_tokens=output.latent_tokens.cpu().numpy(),
-        reconstruction_probabilities=torch.sigmoid(output.reconstruction_logits).cpu().numpy(),
+        reconstruction_probabilities=probabilities.cpu().numpy(),
         attention_maps=attention if attention is not None else np.empty((0,), dtype=np.float32),
     )
     print(f"saved={args.output} tokens={tuple(output.latent_tokens.shape)}")

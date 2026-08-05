@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from .config import DatasetConfig, ExperimentConfig
 from .synthetic import generate_halo_map
+from .policy_data import EpisodeBatchSampler, PolicyHistoryHaloDataset
 
 
 class SyntheticHaloMapDataset(Dataset[dict[str, torch.Tensor]]):
@@ -129,11 +130,32 @@ def build_datasets(config: DatasetConfig) -> tuple[Dataset[Any], Dataset[Any]]:
         if not config.train_path or not config.val_path:
             raise ValueError("dataset.kind=npz requires train_path and val_path.")
         return NpzHaloMapDataset(config.train_path), NpzHaloMapDataset(config.val_path)
+    if config.kind == "policy_history":
+        if not config.train_path or not config.val_path:
+            raise ValueError("dataset.kind=policy_history requires train_path and val_path.")
+        common = dict(
+            history_frames=config.history_frames,
+            min_history_frames=config.min_history_frames,
+            goal_wait_keep_ratio=config.goal_wait_keep_ratio,
+        )
+        return (
+            PolicyHistoryHaloDataset(config.train_path, history_augmentation=config.train_history_augmentation,
+                                     seed=config.seed, **common),
+            PolicyHistoryHaloDataset(config.val_path, history_augmentation=False,
+                                     seed=config.seed + 1, **common),
+        )
     raise ValueError(f"Unsupported dataset kind: {config.kind}")
 
 
 def build_dataloaders(config: ExperimentConfig) -> tuple[DataLoader[Any], DataLoader[Any]]:
     train_dataset, val_dataset = build_datasets(config.dataset)
+    if config.dataset.kind == "policy_history":
+        train_sampler = EpisodeBatchSampler(train_dataset, config.training.batch_size, True, config.training.seed)
+        val_sampler = EpisodeBatchSampler(val_dataset, config.training.val_batch_size, False, config.training.seed + 1)
+        kwargs = dict(num_workers=config.training.num_workers, pin_memory=torch.cuda.is_available(),
+                      persistent_workers=config.training.num_workers > 0)
+        return (DataLoader(train_dataset, batch_sampler=train_sampler, **kwargs),
+                DataLoader(val_dataset, batch_sampler=val_sampler, **kwargs))
     generator = torch.Generator().manual_seed(config.training.seed)
     train_loader = DataLoader(
         train_dataset,

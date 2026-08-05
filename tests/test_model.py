@@ -21,6 +21,16 @@ def test_model_shapes_and_backward() -> None:
     assert any(parameter.grad is not None for parameter in model.parameters())
 
 
+def test_policy_ce_reconstruction_shape() -> None:
+    config = ModelConfig(
+        d_model=32, patch_hidden_dim=48, num_heads=4, dropout=0.0,
+        reconstruction_classes=2,
+    )
+    output = StructuredMapTransformer(config)(torch.randint(0, 2, (2, 17, 17)))
+    assert output.latent_tokens.shape == (2, 25, 32)
+    assert output.reconstruction_logits.shape == (2, 15, 15, 2)
+
+
 def test_agent_map_fusion_shapes() -> None:
     fusion = AgentMapCrossAttention(d_model=64, num_heads=4, dropout=0.0)
     agents = torch.randn(2, 7, 64)

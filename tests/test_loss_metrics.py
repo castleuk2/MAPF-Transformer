@@ -27,3 +27,18 @@ def test_reconstruction_loss_is_finite() -> None:
     loss = MapReconstructionLoss(LossConfig(), model_config)(output, halo)
     assert torch.isfinite(loss.total)
     loss.total.backward()
+
+
+def test_cell_ce_matches_direct_cross_entropy() -> None:
+    model_config = ModelConfig(
+        d_model=32, patch_hidden_dim=48, num_heads=4, dropout=0.0,
+        reconstruction_classes=2,
+    )
+    model = StructuredMapTransformer(model_config)
+    halo = torch.randint(0, 2, (2, 17, 17), dtype=torch.long)
+    output = model(halo)
+    loss = MapReconstructionLoss(LossConfig(mode="cell_ce"), model_config)(output, halo)
+    expected = torch.nn.functional.cross_entropy(
+        output.reconstruction_logits.reshape(-1, 2), halo[:, 1:-1, 1:-1].reshape(-1)
+    )
+    assert torch.allclose(loss.total, expected)

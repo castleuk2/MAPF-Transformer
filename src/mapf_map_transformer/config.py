@@ -31,6 +31,7 @@ class ModelConfig:
     include_port_known_mask: bool = False
     final_norm: bool = True
     reconstruct_ports: bool = False
+    reconstruction_classes: int = 1
 
     def validate(self) -> None:
         if self.halo_size != self.core_size + 2:
@@ -47,6 +48,8 @@ class ModelConfig:
             raise ValueError("num_cell_states must be at least 2.")
         if self.num_layers < 0:
             raise ValueError("num_layers must be non-negative.")
+        if self.reconstruction_classes not in {1, self.num_cell_states}:
+            raise ValueError("reconstruction_classes must be 1 or num_cell_states.")
 
     @property
     def patch_grid_size(self) -> int:
@@ -70,6 +73,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class LossConfig:
+    mode: str = "weighted_bce_dice"  # weighted_bce_dice | cell_ce
     bce_weight: float = 1.0
     dice_weight: float = 0.5
     port_weight: float = 0.0
@@ -80,9 +84,14 @@ class LossConfig:
 
 @dataclass(slots=True)
 class DatasetConfig:
-    kind: str = "synthetic"  # synthetic | npz
+    kind: str = "synthetic"  # synthetic | npz | policy_history
     train_path: str | None = None
     val_path: str | None = None
+    eval_path: str | None = None
+    history_frames: int = 5
+    min_history_frames: int = 1
+    goal_wait_keep_ratio: float = 0.2
+    train_history_augmentation: bool = True
     train_samples: int = 20000
     val_samples: int = 2000
     seed: int = 7
@@ -101,6 +110,7 @@ class TrainingConfig:
     learning_rate: float = 3.0e-4
     weight_decay: float = 1.0e-4
     warmup_steps: int = 200
+    use_scheduler: bool = True
     max_steps: int | None = None
     grad_clip_norm: float = 1.0
     num_workers: int = 0
@@ -111,6 +121,7 @@ class TrainingConfig:
     eval_interval_epochs: int = 1
     checkpoint_interval_epochs: int = 1
     save_visualizations: int = 8
+    include_reachability: bool = True
 
 
 @dataclass(slots=True)
@@ -128,6 +139,10 @@ class ExperimentConfig:
             raise ValueError("epochs must be positive.")
         if self.loss.occupied_pos_weight <= 0:
             raise ValueError("occupied_pos_weight must be positive.")
+        if self.loss.mode not in {"weighted_bce_dice", "cell_ce"}:
+            raise ValueError("loss.mode must be 'weighted_bce_dice' or 'cell_ce'.")
+        if self.loss.mode == "cell_ce" and self.model.reconstruction_classes != self.model.num_cell_states:
+            raise ValueError("cell_ce requires model.reconstruction_classes=num_cell_states.")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

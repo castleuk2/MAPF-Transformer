@@ -271,7 +271,10 @@ class StructuredMapTransformer(nn.Module):
         )
         self.blocks = nn.ModuleList([SpatialTransformerBlock(self.config) for _ in range(self.config.num_layers)])
         self.final_norm = nn.LayerNorm(self.config.d_model) if self.config.final_norm else nn.Identity()
-        self.patch_decoder = nn.Linear(self.config.d_model, self.config.patch_size**2)
+        self.patch_decoder = nn.Linear(
+            self.config.d_model,
+            self.config.patch_size**2 * self.config.reconstruction_classes,
+        )
         self.port_decoder = nn.Linear(self.config.d_model, 4 * self.config.patch_size) if self.config.reconstruct_ports else None
         self.reset_parameters()
 
@@ -314,17 +317,25 @@ class StructuredMapTransformer(nn.Module):
         tokens = self.final_norm(tokens)
 
         patch_logits_flat = self.patch_decoder(tokens)
-        patch_logits = patch_logits_flat.reshape(
-            halo_maps.shape[0],
-            self.config.num_patch_tokens,
-            self.config.patch_size,
-            self.config.patch_size,
-        )
-        reconstruction_logits = unpatchify(
-            patch_logits,
-            grid_size=self.config.patch_grid_size,
-            patch_size=self.config.patch_size,
-        )
+        if self.config.reconstruction_classes == 1:
+            patch_logits = patch_logits_flat.reshape(
+                halo_maps.shape[0], self.config.num_patch_tokens,
+                self.config.patch_size, self.config.patch_size,
+            )
+            reconstruction_logits = unpatchify(
+                patch_logits, grid_size=self.config.patch_grid_size,
+                patch_size=self.config.patch_size,
+            )
+        else:
+            grid = self.config.patch_grid_size
+            patch = self.config.patch_size
+            classes = self.config.reconstruction_classes
+            patch_logits = patch_logits_flat.reshape(
+                halo_maps.shape[0], grid, grid, patch, patch, classes,
+            )
+            reconstruction_logits = patch_logits.permute(0, 1, 3, 2, 4, 5).reshape(
+                halo_maps.shape[0], grid * patch, grid * patch, classes,
+            )
         port_logits = self.port_decoder(tokens) if self.port_decoder is not None else None
         return MapEncoderOutput(
             latent_tokens=tokens,
