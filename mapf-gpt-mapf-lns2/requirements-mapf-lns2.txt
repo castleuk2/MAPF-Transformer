@@ -1,6 +1,0 @@
-cppimport
-loguru
-numpy
-pyarrow>=15
-pydantic>=2
-torch

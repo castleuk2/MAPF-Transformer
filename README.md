@@ -1,429 +1,293 @@
-# MAPF Transformer
+# MAPF Structured Map Transformer
 
-POGEMA 환경에서 MAPF-LNS2 expert trajectory를 생성하고, 계층형
-spatio-temporal Transformer를 imitation learning으로 학습·평가하기 위한
-workspace입니다. MAPF-GPT의 map/seed/agent 구성과 공식 evaluation suite를
-재사용하되, 모델 입력 구조와 trajectory 저장 방식은 별도로 구현했습니다.
+15×15 Ego-centered binary map을 **25개의 공간적으로 정렬된 3×3 patch token**으로 변환하고, reconstruction loss를 통해 25-token bottleneck이 free/occupied 구조를 충분히 보존하는지 평가하는 독립 실행형 PyTorch 프로젝트이다.
 
-현재 저장소는 다음 실험을 재현할 수 있습니다.
+입력은 중앙 15×15와 한 셀 폭 halo를 포함한 17×17이다. 17×17 전체를 token화하지는 않는다. 중앙 15×15만 5×5 patch grid로 나누며, halo는 15×15 외곽에서 free space가 실제로 이어지는지를 계산하고 이동 시 17개 신규 셀만 갱신하기 위해 사용한다.
 
-- MAPF-GPT의 Maze/Random map catalog로 train/validation trajectory 생성
-- 공식 MAPF-LNS2를 expert solver로 사용(시나리오당 10초, 24 CPU process)
-- final-goal 이후 WAIT target의 20%를 복원한 학습
-- 2 GPU DDP 학습과 구조화된 loss/accuracy log 기록
-- map latent 16/32 및 one-hop cost-to-go ablation
-- 동일한 MAPF-GPT evaluation scenario에서 MAPF Transformer, MAPF-GPT-6M,
-  MAPF-LNS2의 SR, SoC, makespan, runtime 비교
-- raw trajectory를 유지하면서 I/O 비용을 줄이는 lossless packed cache
-
-## 저장소 구조
+## 1. 최종 구조
 
 ```text
-MAPF-Transformer-workspace/
-├── mapf-transformer-policy/       # 모델, Dataset/DataLoader, 학습·추론 코드
-├── pogema-mapf-transformer/       # POGEMA adapter, MAPF-LNS2 데이터 생성·평가
-├── mapf-gpt-mapf-lns2/            # 동일 expert data용 MAPF-GPT-6M 학습·추론 코드
-├── dataset_archives/              # Git LFS로 관리되는 150M trajectory archive
-├── DATA_GENERATION_README.md       # 데이터 생성 전용 PC 구성 안내
-└── VALIDATION.md                   # 초기 검증 기록
+17×17 static occupancy window
+  ├─ one-cell halo: outer continuation / rolling update
+  └─ center 15×15 core
+          │
+          ▼
+5×5 non-overlapping patches, each 3×3
+          │
+          ▼
+Patch feature builder
+  ├─ 9 cell states as one-hot vectors
+  ├─ N/S/W/E 3-bit movement openings (12 bits)
+  └─ outer-edge indicator (4 bits)
+          │
+          ▼
+Shared Patch MLP: 34 → 256 → 256
+          │
+          ▼
+Learned 2D row/column positional encoding
+          │
+          ▼
+One Spatial Map Transformer encoder block
+  ├─ full 25-token self-attention
+  ├─ 2D relative-position bias
+  ├─ patch-connectivity bias
+  └─ FFN
+          │
+          ├──────────────► 25 × 256 structured map tokens
+          │
+          ▼
+Shared reconstruction head: each token → 9 cell logits
+          │
+          ▼
+15×15 occupancy reconstruction
 ```
 
-세 프로젝트는 독립적인 Python package이며, POGEMA나 MAPF-GPT 원본을 직접
-수정하지 않습니다.
+출력 token 수는 다음과 같이 고정된다.
 
-## 모델 구조
+$$
+N_{\mathrm{map}}=
+\left(\frac{15}{3}\right)^2=25
+$$
 
-기본 모델은 약 8.8M parameter의 hierarchical Transformer입니다.
+각 token $\mathbf{m}_{u,v}$는 항상 5×5 patch grid의 동일한 위치 $(u,v)$에 대응한다. learned latent query를 이용한 225→25 soft pooling이 아니므로 token index의 공간적 의미가 변하지 않는다.
 
-- ego 중심 15x15 local obstacle map
-- 225 cell token을 cross-attention으로 16개 learned map latent로 압축
-- ego 1개와 최대 15개 neighbor를 안정적인 tracking slot에 배치
-- agent payload: local x(4 bit), y(4 bit), shortest-path action mask(4 bit),
-  distance bucket(6 bit)
-- frame당 conditioned agent token 16개 + transition token 1개
-- 최근 15 frame(255 token) + `[ACT]` query 1개 = temporal context 256 token
-- temporal Transformer 8 layer, `d_model=256`, 8 attention head
-- POGEMA action 순서: `WAIT, UP, DOWN, LEFT, RIGHT`
+## 2. Patch feature
 
-초기 시점에 존재하지 않는 history frame은 validity mask가 false인 PAD frame으로
-처리합니다. Local map이 global map 경계를 넘어갈 때는 바깥 영역을 obstacle로
-padding합니다. 모델 입력은 현재 시점 하나의 행동 label을 예측하지만, 그 입력에는
-최대 15개 과거 frame의 local map, 주변 agent, transition 정보가 포함됩니다.
+binary map에서 `0=free`, `1=occupied`를 기본값으로 사용한다. 각 3×3 patch의 9개 상태를 2-class one-hot으로 변환한다.
 
-자세한 구조는 [policy README](mapf-transformer-policy/README.md)를 참고하십시오.
+$$
+9\times2=18
+$$
 
-## 환경 구축
+각 patch edge의 3개 셀에 대해, 현재 셀과 한 칸 바깥 이웃 셀이 모두 free일 때 opening을 1로 정의한다.
 
-Ubuntu와 Python 3.10 이상을 지원합니다. 재현성을 위해 현재 주 실험 환경과 같은
-Python 3.12를 권장합니다. Python 3.13에서는 설치 시점의 최신 PyTorch/CUDA wheel이
-선택될 수 있으므로 두 PC의 package version을 반드시 비교하십시오.
+$$
+o^d_k=
+\mathbb{I}[s_k=\mathrm{free}]
+\land
+\mathbb{I}[s_{k+d}=\mathrm{free}]
+$$
+
+네 방향에서 3개 opening을 사용하므로 12차원이다. 15×15 바깥에 있는 이웃은 17×17 halo에서 얻는다. 내부 patch 경계와 외곽 경계가 동일한 식으로 처리된다.
+
+기본 feature 차원은 다음과 같다.
+
+$$
+18\;\text{(cell states)} + 12\;\text{(ports)} + 4\;\text{(outer-edge mask)}=34
+$$
+
+이를 shared MLP로 256차원에 임베딩한다.
+
+## 3. Spatial Map Transformer
+
+25개 patch embedding에 2D positional encoding을 더한다.
+
+$$
+\mathbf{x}_{u,v}^{(0)}=
+\mathbf{g}_{u,v}+E_{\mathrm{row}}(u)+E_{\mathrm{col}}(v)
+$$
+
+기본 모델은 **encoder block 1개**만 사용한다. 한 번의 full self-attention으로 모든 25개 patch가 서로 직접 정보를 교환할 수 있다.
+
+Attention score에는 2D 상대 위치와 인접 patch의 3-bit opening code가 추가된다.
+
+$$
+A_{ij}^{(h)}=
+\frac{\mathbf{q}_i^{(h)\mathsf T}\mathbf{k}_j^{(h)}}{\sqrt{d_h}}
++B_{\mathrm{rel}}^{(h)}(\Delta u,\Delta v)
++B_{\mathrm{conn}}^{(h)}(d,c_{ij})
+$$
+
+`num_layers`는 configuration에서 0, 1, 2 등으로 바꿀 수 있지만 기본값은 1이다.
+
+## 4. Reconstruction loss
+
+각 최종 token에서 해당 3×3 patch의 9개 occupied logits를 직접 예측한다. 25개 결과를 원래 공간 순서로 결합하여 15×15 map을 복원한다.
+
+기본 reconstruction loss는 weighted BCE와 soft Dice loss의 합이다.
+
+$$
+\mathcal{L}_{\mathrm{recon}}
+=\lambda_{\mathrm{BCE}}\mathcal{L}_{\mathrm{WBCE}}
++\lambda_{\mathrm{Dice}}\mathcal{L}_{\mathrm{Dice}}
+$$
+
+장애물 경계 셀에는 추가 pixel weight를 적용한다. free 셀이 많은 데이터에서는 `occupied_pos_weight`로 occupied class를 더 크게 반영한다.
+
+25개 token의 적절성은 loss 하나만으로 판단하지 않고 다음 지표를 함께 기록한다.
+
+- occupied IoU, precision, recall, F1
+- 1-cell tolerance boundary F1
+- 3×3 patch exact reconstruction rate
+- 전체 15×15 exact reconstruction rate
+- Ego 중심에서 계산한 free-space reachability IoU
+- 중앙 connected component가 네 외곽 방향까지 도달하는지에 대한 agreement
+
+좁은 통로가 중요한 MAPF에서는 cell accuracy보다 `occupied_iou`, `boundary_f1`, `reachability_iou`를 우선 확인하는 것이 적절하다.
+
+## 5. 17-cell rolling update와 latent reuse
+
+상태 메모리는 15×15가 아니라 **17×17 halo window 전체**를 보관한다. 실제 Ego displacement가 한 칸이면 기존 window를 shift하고 신규 row 또는 column 17개만 삽입한다.
+
+| 실제 이동 | 유지 셀의 local shift | 신규 strip |
+|---|---|---|
+| UP | 아래로 1칸 | 최상단 row 17개 |
+| DOWN | 위로 1칸 | 최하단 row 17개 |
+| LEFT | 오른쪽으로 1칸 | 최좌측 column 17개 |
+| RIGHT | 왼쪽으로 1칸 | 최우측 column 17개 |
+| WAIT / 이동 실패 | 변화 없음 | 없음 |
+
+WAIT 또는 이동 실패이고 static map이 변하지 않았다면 model forward를 수행하지 않고 **이전 latent tensor를 그대로 반환**한다. 명령 action이 아니라 `moved`로 전달된 실제 이동 결과를 기준으로 갱신한다.
+
+```python
+result = runtime.step(
+    Action.RIGHT,
+    moved=True,
+    incoming_strip=new_right_column,  # shape [17]
+)
+
+# WAIT 또는 이동 실패
+result = runtime.step(Action.WAIT, moved=False)
+assert result.reused
+```
+
+다수 Agent를 위한 `VectorizedMapTokenRuntime`은 바뀐 Agent window만 batch로 다시 encode한다.
+
+## 6. 설치
 
 ```bash
-git clone https://github.com/castleuk2/MAPF-Transformer.git
-cd MAPF-Transformer
-
-python3 -m venv MAPF
-source MAPF/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-
-python -m pip install -e mapf-transformer-policy
-python -m pip install -e 'pogema-mapf-transformer[pogema]'
-python -m pip install -r pogema-mapf-transformer/requirements-benchmark.txt
+python -m pip install -e .
 ```
 
-GPU 확인:
+개발 환경까지 설치하려면 다음을 사용한다.
 
 ```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available()); \
-print([torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())])"
+python -m pip install -e '.[dev]'
 ```
 
-### MAPF-LNS2 설치
-
-MAPF-LNS2는 별도 license를 사용하므로 binary를 저장소에 포함하지 않습니다.
+## 7. 빠른 검증
 
 ```bash
-sudo apt install -y cmake build-essential libboost-all-dev libeigen3-dev
-bash pogema-mapf-transformer/tools/setup_mapf_lns2.sh
+pytest -q
+python train.py --config configs/smoke.yaml
+python demo_runtime.py --checkpoint runs/smoke/best.pt
+python evaluate.py \
+  --checkpoint runs/smoke/best.pt \
+  --visualization runs/smoke/evaluation.png
 ```
 
-기본 config가 참조하는 binary는
-`pogema-mapf-transformer/external/MAPF-LNS2/lns`입니다.
+기본 256차원 학습:
 
-## 데이터 생성
+```bash
+python train.py --config configs/map_reconstruction.yaml
+```
 
-### 데이터 단위와 filtering
-
-원본 `.npz` episode에는 obstacle map, 모든 agent의 positions/goals/actions,
-stable neighbor tracking 정보, 각 agent의 `arrival_steps`가 저장됩니다.
-
-학습 sample 하나는 `(episode, ego agent, time step)`이며 target은 해당 ego의
-expert action 하나입니다. Solver 실패, 128 step 초과, vertex/edge transition 검증
-실패 episode는 manifest에 포함하지 않으므로 학습에서도 자동 제외됩니다.
-
-기본 sample 수는 다음과 같습니다.
+주요 출력:
 
 ```text
-base samples per episode = sum(arrival_steps) = expert SoC
+runs/map_reconstruction/
+├── resolved_config.yaml
+├── metrics.jsonl
+├── best.pt
+├── last.pt
+├── epoch_XXX.pt
+├── summary.json
+└── visualizations/
 ```
 
-목표에 최종적으로 도착하기 전의 행동(목표에서 다시 나와 양보하는 행동 포함)은
-모두 유지합니다. 최종 도착 이후 makespan까지 이어지는 반복 WAIT은 기본적으로
-제외하지만, 학습 loader가 `goal_wait_keep_ratio: 0.2`에 따라 그중 약 20%를
-결정적으로 복원합니다. 따라서 실제 학습 sample 수는 base SoC보다 큽니다.
+## 8. 외부 데이터 사용
 
-### 1시간 실험 데이터
+### 8.1 단순 Halo-map NPZ
 
-```bash
-cd pogema-mapf-transformer
-PYTHONPATH=src ../MAPF/bin/python -u generate_grid_dataset.py \
-  --config configs/dataset_grid_mapf_lns2_1h.yaml
-```
-
-생성 설정은 Maze/Random 각각 train `122 maps x 10 seeds x 3 agent counts`
-(`[16,24,32]`)이며, validation은 별도 held-out map catalog를 사용합니다.
-최종 저장본은 validation을 확장·교체한 결과이며 다음 성공 episode를 포함합니다.
-
-| Split | 성공 episode | Base SoC sample |
-|---|---:|---:|
-| Train | 6,988 | 2,819,063 |
-| Validation | 739 | 284,074 |
-| 합계 | 7,727 | 3,103,137 |
-
-시도한 8,088개 중 361개 실패 episode는 제외되었습니다. Map family별 base sample은
-Maze 1,955,070(63.0%), Random 1,148,067(37.0%)입니다. 정확한 수치는
-`pogema-mapf-transformer/data/mapf_lns2_1h/dataset_summary.json`에 기록됩니다.
-
-### 약 150M train / 15M validation 확장 데이터
-
-```bash
-cd pogema-mapf-transformer
-PYTHONPATH=src ../MAPF/bin/python -u generate_grid_dataset.py \
-  --config configs/dataset_grid_mapf_lns2_150m_expansion.yaml
-```
-
-기존 map/seed를 반복하지 않고 map 다양성만 확장합니다. Train은 family마다 신규
-5,400 maps x 10 seeds x agents `[16,24,32]`, validation은 family마다 held-out
-2,820 maps x 2 seeds x 같은 agent 수를 사용합니다. 24 process가 서로 독립적인
-scenario를 병렬 처리하며, MAPF-LNS2는 높은 iteration ceiling 아래 10초 time limit을
-모두 repair에 사용할 수 있습니다.
-
-Git LFS archive를 받은 경우 다음과 같이 복원합니다.
-
-```bash
-git lfs install
-git lfs pull
-cd pogema-mapf-transformer/data
-mkdir -p mapf_lns2_150m_expansion
-cd mapf_lns2_150m_expansion
-tar -xf ../../../dataset_archives/mapf_lns2_150m_maze_train.tar
-tar -xf ../../../dataset_archives/mapf_lns2_150m_random_train.tar
-tar -xf ../../../dataset_archives/mapf_lns2_150m_maze_val.tar
-tar -xf ../../../dataset_archives/mapf_lns2_150m_random_val.tar
-tar -xzf ../../../dataset_archives/mapf_lns2_150m_metadata.tar.gz
-```
-
-Archive의 checksum은 `dataset_archives/SHA256SUMS`로 확인할 수 있습니다.
-
-## Lossless packed cache
-
-Raw trajectory는 작고 모델 구조 변경에 재사용할 수 있지만, 매 학습 sample마다
-15-frame feature를 CPU에서 동적으로 구성하는 비용이 큽니다. Packed cache는
-각 `(episode, frame, ego)` feature를 한 번만 전처리하며, 반복된 15-frame sample을
-저장하지 않습니다.
-
-- 15x15 binary map: 225 bit -> 29 byte bitmap
-- agent x/y/action-mask/distance: 18-bit payload
-- valid/reset: 16-bit slot mask
-- transition 및 선택적 one-hop CTG: `uint8`
-- batch 전송 후 GPU에서 기존 tensor와 losslessly 동일하게 복원
-
-실측 기준 DataLoader sample 표현은 47,199 byte에서 1,614 byte로 약 29.2배
-감소했습니다. 이는 입력 I/O와 CPU feature 처리 최적화이며 모델, logits, loss,
-checkpoint 형식은 바꾸지 않습니다. 전체 설명과 검증 결과는
-[PACKED_DATASET.md](mapf-transformer-policy/PACKED_DATASET.md)에 있습니다.
-
-1시간 데이터 변환:
-
-```bash
-PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
-  mapf-transformer-policy/pack_dataset.py \
-  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl \
-  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/train \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  --workers 24
-
-PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
-  mapf-transformer-policy/pack_dataset.py \
-  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl \
-  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/val \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  --workers 24
-```
-
-중단 후 같은 명령을 다시 실행하면 완료 episode를 건너뜁니다. Resume할 때
-`--overwrite`는 사용하지 마십시오. One-hop CTG cache는 feature가 다르므로
-`ablation_one_hop_ctg.yaml`로 별도 생성해야 합니다.
-
-## 학습
-
-### 실험 config
-
-| Config | Map latent | One-hop CTG | 입력 형식 |
-|---|---:|---:|---|
-| `ablation_baseline_latent16.yaml` | 16 | off | raw trajectory |
-| `ablation_map_latent32.yaml` | 32 | off | raw trajectory |
-| `ablation_one_hop_ctg.yaml` | 16 | on | raw trajectory |
-| `packed_baseline_latent16.yaml` | 16 | off | packed cache |
-
-세 ablation config는 비교 대상 외 모델과 optimizer 설정을 동일하게 유지합니다.
-현재 기본 학습은 3 epoch, AdamW, peak LR `3e-4`, cosine decay, effective batch
-256, AMP를 사용합니다.
-
-### 2 GPU DDP 실행
-
-먼저 log directory를 생성해야 `tee`가 시작과 동시에 실패하지 않습니다.
-
-```bash
-mkdir -p mapf-transformer-policy/runs/ablation_baseline_latent16
-set -o pipefail
-
-CUDA_VISIBLE_DEVICES=0,1 \
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-PYTHONPATH=mapf-transformer-policy/src \
-torchrun --standalone --nproc_per_node=2 \
-  mapf-transformer-policy/train.py \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  2>&1 | tee mapf-transformer-policy/runs/ablation_baseline_latent16/console.log
-```
-
-`batch_size`는 GPU 하나가 한 micro-step에 처리하는 sample 수입니다.
-`gradient_accumulation_steps`는 모든 rank를 합친 global 값이며 world size로
-나뉩니다. 따라서 2 GPU에서 `batch_size=16`, accumulation 16이면 effective batch는
-256입니다. Packed cache에서 동일한 effective batch를 유지하며 GPU utilization을
-높이려면 우선 micro-batch 64/accumulation 4, 여유가 있으면 128/2를 비교하십시오.
-
-1 GPU는 `CUDA_VISIBLE_DEVICES=0`과 `--nproc_per_node=1`로 선택할 수 있습니다.
-
-### 재시작과 출력
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 \
-PYTHONPATH=mapf-transformer-policy/src \
-torchrun --standalone --nproc_per_node=2 \
-  mapf-transformer-policy/train.py \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  --resume mapf-transformer-policy/runs/ablation_baseline_latent16/step_00005000.pt
-```
-
-Rank 0은 다음 파일을 기록합니다.
-
-- `console.log`: 표준 출력/경고/오류 전체(`tee` 사용 시)
-- `metrics.jsonl`: step별 total/action/map loss, LR, throughput과 validation metric
-- `resolved_config.yaml`: 실제 적용 설정
-- `best.pt`, `step_*.pt`, `last.pt`: checkpoint
-
-Total loss는 다음과 같습니다.
+`dataset.kind: npz`는 이미 crop된 17×17 map을 직접 읽는 단순 입력 경로이다. `.npz` 파일은 다음 배열을 포함한다.
 
 ```text
-total_loss = action_cross_entropy + 0.05 * map_reconstruction_BCE
+halo_maps: uint8/int64 [N,17,17]
 ```
 
-Action loss는 5개 행동에 대한 cross-entropy입니다. Map reconstruction loss는
-유효한 history frame의 225개 cell을 map latent에서 복원한 binary cross-entropy로,
-0에 가까울수록 원래 obstacle map을 잘 복원합니다. Accuracy는 expert action과
-argmax action이 같은 supervised sample의 비율이며 rollout SR을 의미하지 않습니다.
+### 8.2 Policy-exposure 원본 Episode NPZ
 
-## 평가
-
-평가는 기본적으로 GPU 한 장만 사용합니다. `max_episode_steps=128`에서 모든
-agent가 목표에 최종 도착하면 **SR(success rate)=1**인 episode로 정의합니다.
-
-- SR: 모든 agent가 성공한 episode의 비율(기존 CSR과 동일)
-- ISR: 개별 agent 도착 비율(보조 지표)
-- SoC: 각 agent의 최종 안정 도착 step 합
-- Makespan: 마지막 agent의 최종 안정 도착 step
-- Runtime: learned policy는 inference 합, MAPF-LNS2는 planning time
-
-MAPF Transformer와 동일 expert data로 학습한 MAPF-GPT-6M을 공식 Random/Maze
-scenario에서 비교:
+기존 M8/M16/M32 Map Autoencoder와 같은 데이터 노출 및 Loss로 비교할 때는 다음 설정을 사용한다.
 
 ```bash
-cd pogema-mapf-transformer
-CUDA_VISIBLE_DEVICES=0 \
-PYTHONPATH=../mapf-transformer-policy/src:src \
-../MAPF/bin/python benchmark_compare.py \
-  --suites random mazes \
-  --models mapf_transformer mapf_gpt_6m \
-  --agent-counts 8 16 24 \
-  --map-limit 50 --seed-limit 1 \
-  --current-checkpoint ../mapf-transformer-policy/runs/ablation_baseline_latent16/last.pt \
-  --mapf-gpt-checkpoint ../mapf-gpt-mapf-lns2/runs/mapf_gpt_6m_mapf_lns2/last.pt \
-  --device cuda:0 \
-  --output-dir results/mapf_transformer_vs_mapf_gpt
+python train.py --config configs/policy_exposure_ce.yaml
+python evaluate_policy_exposure.py \
+  --checkpoint runs/policy_exposure_structured_25_ce/best.pt \
+  --splits val eval \
+  --output runs/policy_exposure_structured_25_ce/policy_exposure_metrics.json
 ```
 
-MAPF-LNS2도 포함하려면:
+이 경로의 manifest는 `obstacles`, `positions` 배열을 가진 원본 episode NPZ를 가리킨다. Loader가 frame·Ego를 선택하고 17×17 halo map을 실시간으로 crop하며, Train history만 결정적으로 truncation하고 Val/Eval은 사용 가능한 history를 최대 5까지 사용한다. 중앙 15×15의 각 Cell에 Free/Obstacle 2 logits을 출력하며 기존 실험과 동일한 cell-wise mean CE로 학습한다.
+
+### 8.3 기존 Packed Policy Data와의 차이
+
+`.npz`는 파일 확장자이자 NumPy container일 뿐이므로, 내부 배열이 다르면 동일한 dataset이 아니다. 기존 packed policy data는 `local_map_bits`, `agent_payload`, `agent_valid_bits`, `track_reset_bits`, action/outcome 등을 frame·Ego 단위로 미리 계산한 형식이다. 반면 현재 Structured Map 학습은 원본 `obstacles`/`positions`에서 map history만 재구성하므로 두 형식은 직접 교체할 수 없다.
+
+`scripts/pack_eval_core_maps.py`가 만드는 `local_map_bits` NPZ도 15×15 core map만 보관하는 평가용 축약 형식이다. 이는 기존 packed policy dataset 전체 schema와 다르며, 현재 `PolicyHistoryHaloDataset`의 학습 입력으로도 직접 사용되지 않는다.
+
+공유 설계의 weighted BCE+Dice 기본 경로는 Policy-exposure의 cell-wise CE 경로와 별도로 유지된다.
+
+데이터 생성 예제:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-PYTHONPATH=../mapf-transformer-policy/src:src \
-../MAPF/bin/python benchmark_compare.py \
-  --suites random mazes \
-  --models mapf_transformer mapf_gpt_6m mapf_lns2 \
-  --agent-counts 8 16 24 \
-  --map-limit 50 --seed-limit 1 \
-  --current-checkpoint ../mapf-transformer-policy/runs/ablation_baseline_latent16/last.pt \
-  --mapf-gpt-checkpoint ../mapf-gpt-mapf-lns2/runs/mapf_gpt_6m_mapf_lns2/last.pt \
-  --device cuda:0 \
-  --mapf-lns2-binary external/MAPF-LNS2/lns \
-  --mapf-lns2-cutoff 10 \
-  --mapf-lns2-max-iterations 1000000000 \
-  --mapf-lns2-workers 24 \
-  --output-dir results/three_model_comparison
+python scripts/create_npz_dataset.py --output-dir data/halo_maps
 ```
 
-`episodes.csv`는 episode 완료 때마다 append되므로 같은 명령으로 resume할 수
-있습니다. `summary.csv/json`에는 model, map family, agent 수별 aggregate가
-저장됩니다. 양쪽 모두 SR=1인 공통 episode에서만 SoC/makespan/runtime을 비교해야
-경로 품질 비교가 공정합니다.
+configuration을 다음처럼 바꾼다.
 
-그래프 생성:
-
-```bash
-cd pogema-mapf-transformer
-../MAPF/bin/python plot_trained_model_comparison.py \
-  results/three_model_comparison
+```yaml
+dataset:
+  kind: npz
+  train_path: data/halo_maps/train.npz
+  val_path: data/halo_maps/val.npz
 ```
 
-이 명령은 같은 `episodes.csv`에서 MAPF Transformer와 MAPF-GPT-6M을 골라
-map/agent별 SR 및 두 모델 모두 성공한 episode의 paired metric 그래프를 PNG/SVG로
-저장합니다. MAPF-LNS2를 포함한 3-model 보고서는 서로 동일한 scenario로 실행한
-learned-model 결과 directory와 LNS2 결과 directory를
-`plot_three_model_comparison.py`에 전달해 생성할 수 있습니다.
+## 9. 기존 MAPF policy와 결합
 
-단일 rollout을 SVG로 저장할 수도 있습니다.
+Map encoder 출력은 다음 shape이다.
 
-```bash
-cd pogema-mapf-transformer
-python inference.py \
-  --config configs/evaluation.yaml \
-  --checkpoint ../mapf-transformer-policy/runs/ablation_baseline_latent16/last.pt \
-  --episodes 1 --save-svg-dir renders
+```python
+map_output = map_encoder(halo_maps)
+map_tokens = map_output.latent_tokens  # [B,25,256]
 ```
 
-## Metadata/Graph ablation과 1-hour packed cache
+Agent token이 Query, map token이 Key/Value가 되는 cross-attention adapter가 포함되어 있다.
 
-기존 baseline은 유지하며 같은 1-hour trajectory로 다음 ablation을 실행할 수 있습니다.
+```python
+from mapf_map_transformer import AgentMapCrossAttention
 
-- Experiment 1: grouped/gated metadata encoder
-- Experiment 2: baseline metadata + edge-aware graph attention 1 layer
-- Experiment 3: grouped metadata + edge-aware graph attention 1 layer
-
-세 실험은 동일한 입력 필드를 사용하므로 packed cache는 한 번만 생성해 공유합니다.
-
-```bash
-PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
-  mapf-transformer-policy/pack_dataset.py \
-  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl \
-  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/train \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  --workers 24
-
-PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python \
-  mapf-transformer-policy/pack_dataset.py \
-  --manifest pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl \
-  --output-dir pogema-mapf-transformer/data/mapf_lns2_1h_packed/val \
-  --config mapf-transformer-policy/configs/ablation_baseline_latent16.yaml \
-  --workers 24
+fusion = AgentMapCrossAttention(d_model=256, num_heads=8)
+map_aware_agents = fusion(
+    agent_tokens,     # [B,A,256]
+    map_tokens,       # [B,25,256]
+    agent_xy,         # [B,A,2], local x/y in [-7,7]
+)
 ```
 
-Effective-batch-2048 비교에서는 기존 baseline도 다시 학습합니다. RTX 4090 24GB의
-실제 forward/backward probe 결과에 따라 네 모델 모두 `batch_size=256`, global
-accumulation 8을 사용하며 global effective batch는 2048입니다.
-기존 effective-batch-256 실험과 sample 기준 scheduler를 맞추기 위해 warmup,
-validation, checkpoint step 간격을 1/8로 조정했습니다.
+Map token은 static geometry를 유지하고 Agent token만 map-aware하게 갱신한다. 세부 교체 절차는 `docs/INTEGRATION.md`를 참조한다.
 
-예를 들어 Experiment 1의 2-GPU 학습은 다음과 같습니다.
+## 10. 설계상 주의점
 
-```bash
-mkdir -p mapf-transformer-policy/runs/packed_experiment1_grouped_metadata
-CUDA_VISIBLE_DEVICES=0,1 PYTHONPATH=mapf-transformer-policy/src \
-torchrun --standalone --nproc_per_node=2 mapf-transformer-policy/train.py \
-  --config mapf-transformer-policy/configs/packed_experiment1_grouped_metadata.yaml \
-  2>&1 | tee mapf-transformer-policy/runs/packed_experiment1_grouped_metadata/console.log
+- 17×17 halo가 있어도 token화 대상은 중앙 15×15뿐이다.
+- WAIT 재사용은 static geometry가 변하지 않는다는 전제에서만 유효하다.
+- 다른 Agent의 dynamic occupancy를 static map channel에 합치지 않는 것이 좋다.
+- Ego가 이동하면 3×3 patch alignment가 바뀌므로 25개 patch token은 다시 생성한다. 증분 갱신은 17×17 cell buffer에서 수행한다.
+- Reconstruction 성능이 높더라도 최종 MAPF rollout 성능을 보장하지는 않는다. 이후 action success rate, collision rate, deadlock rate와 함께 검증해야 한다.
+
+## 11. 파일 구성
+
+```text
+src/mapf_map_transformer/
+├── geometry.py       # patch/port 생성, 17-cell rolling update
+├── model.py          # patch MLP + 25-token Spatial Transformer + decoder
+├── losses.py         # reconstruction loss
+├── metrics.py        # occupancy/boundary/reachability metrics
+├── runtime.py        # single/vectorized latent cache
+├── fusion.py         # optional Agent→Map cross-attention
+├── data.py           # synthetic/NPZ datasets
+└── trainer.py        # training and evaluation loop
 ```
 
-Experiment 2와 3은 각각
-`packed_experiment2_graph_attention_l1.yaml`,
-`packed_experiment3_grouped_metadata_graph_l1.yaml`을 사용합니다. Packed cache는
-lossless cache이며 GPU에서 기존 입력 tensor로 복원되므로 raw/packed 입력에 따른
-모델 의미와 학습 target은 동일합니다.
+## Upstream context
 
-## 테스트
-
-```bash
-PYTHONPATH=mapf-transformer-policy/src MAPF/bin/python -m pytest \
-  mapf-transformer-policy/tests
-
-PYTHONPATH=mapf-transformer-policy/src:pogema-mapf-transformer/src \
-MAPF/bin/python -m pytest pogema-mapf-transformer/tests
-```
-
-Packed pipeline은 synthetic/실제 MAPF-LNS2 episode에서 raw 입력과 모든 tensor,
-logit, total/action/map loss가 일치하는지 검증했습니다. Model forward/backward,
-checkpoint 저장·복원, stable tracking, collision 검증도 test에 포함됩니다.
-
-## 참고 문서
-
-- [데이터 생성 전용 환경](DATA_GENERATION_README.md)
-- [Packed cache 상세](mapf-transformer-policy/PACKED_DATASET.md)
-- [Policy 구조 및 API](mapf-transformer-policy/README.md)
-- [POGEMA 연동 및 benchmark](pogema-mapf-transformer/README.md)
-- [MAPF-GPT trajectory 변환](mapf-gpt-mapf-lns2/README_CONVERSION.md)
-
-## License 및 출처
-
-이 저장소의 코드는 각 하위 project의 license를 따릅니다. POGEMA, MAPF-GPT,
-MAPF-LNS2 map catalog 및 solver는 각각의 upstream license를 따르며, MAPF-LNS2
-binary는 사용자가 공식 source에서 직접 build해야 합니다.
+이 프로젝트는 MAPF Transformer의 map bottleneck 실험을 독립적으로 수행하기 위한 모듈이다. Action order는 POGEMA 관례인 `WAIT, UP, DOWN, LEFT, RIGHT`를 사용한다.
