@@ -44,37 +44,37 @@ Shared reconstruction head: each token → 9 cell logits
 
 출력 token 수는 다음과 같이 고정된다.
 
-\[
+$$
 N_{\mathrm{map}}=
 \left(\frac{15}{3}\right)^2=25
-\]
+$$
 
-각 token \(\mathbf{m}_{u,v}\)는 항상 5×5 patch grid의 동일한 위치 \((u,v)\)에 대응한다. learned latent query를 이용한 225→25 soft pooling이 아니므로 token index의 공간적 의미가 변하지 않는다.
+각 token $\mathbf{m}_{u,v}$는 항상 5×5 patch grid의 동일한 위치 $(u,v)$에 대응한다. learned latent query를 이용한 225→25 soft pooling이 아니므로 token index의 공간적 의미가 변하지 않는다.
 
 ## 2. Patch feature
 
 binary map에서 `0=free`, `1=occupied`를 기본값으로 사용한다. 각 3×3 patch의 9개 상태를 2-class one-hot으로 변환한다.
 
-\[
+$$
 9\times2=18
-\]
+$$
 
 각 patch edge의 3개 셀에 대해, 현재 셀과 한 칸 바깥 이웃 셀이 모두 free일 때 opening을 1로 정의한다.
 
-\[
+$$
 o^d_k=
 \mathbb{I}[s_k=\mathrm{free}]
 \land
 \mathbb{I}[s_{k+d}=\mathrm{free}]
-\]
+$$
 
 네 방향에서 3개 opening을 사용하므로 12차원이다. 15×15 바깥에 있는 이웃은 17×17 halo에서 얻는다. 내부 patch 경계와 외곽 경계가 동일한 식으로 처리된다.
 
 기본 feature 차원은 다음과 같다.
 
-\[
+$$
 18\;\text{(cell states)} + 12\;\text{(ports)} + 4\;\text{(outer-edge mask)}=34
-\]
+$$
 
 이를 shared MLP로 256차원에 임베딩한다.
 
@@ -82,21 +82,21 @@ o^d_k=
 
 25개 patch embedding에 2D positional encoding을 더한다.
 
-\[
+$$
 \mathbf{x}_{u,v}^{(0)}=
 \mathbf{g}_{u,v}+E_{\mathrm{row}}(u)+E_{\mathrm{col}}(v)
-\]
+$$
 
 기본 모델은 **encoder block 1개**만 사용한다. 한 번의 full self-attention으로 모든 25개 patch가 서로 직접 정보를 교환할 수 있다.
 
 Attention score에는 2D 상대 위치와 인접 patch의 3-bit opening code가 추가된다.
 
-\[
+$$
 A_{ij}^{(h)}=
 \frac{\mathbf{q}_i^{(h)\mathsf T}\mathbf{k}_j^{(h)}}{\sqrt{d_h}}
 +B_{\mathrm{rel}}^{(h)}(\Delta u,\Delta v)
 +B_{\mathrm{conn}}^{(h)}(d,c_{ij})
-\]
+$$
 
 `num_layers`는 configuration에서 0, 1, 2 등으로 바꿀 수 있지만 기본값은 1이다.
 
@@ -106,11 +106,11 @@ A_{ij}^{(h)}=
 
 기본 reconstruction loss는 weighted BCE와 soft Dice loss의 합이다.
 
-\[
+$$
 \mathcal{L}_{\mathrm{recon}}
 =\lambda_{\mathrm{BCE}}\mathcal{L}_{\mathrm{WBCE}}
 +\lambda_{\mathrm{Dice}}\mathcal{L}_{\mathrm{Dice}}
-\]
+$$
 
 장애물 경계 셀에는 추가 pixel weight를 적용한다. free 셀이 많은 데이터에서는 `occupied_pos_weight`로 occupied class를 더 크게 반영한다.
 
@@ -197,13 +197,15 @@ runs/map_reconstruction/
 
 ## 8. 외부 데이터 사용
 
-`.npz` 파일은 다음 배열을 포함한다.
+### 8.1 단순 Halo-map NPZ
+
+`dataset.kind: npz`는 이미 crop된 17×17 map을 직접 읽는 단순 입력 경로이다. `.npz` 파일은 다음 배열을 포함한다.
 
 ```text
 halo_maps: uint8/int64 [N,17,17]
 ```
 
-### Policy-exposure 공정 비교
+### 8.2 Policy-exposure 원본 Episode NPZ
 
 기존 M8/M16/M32 Map Autoencoder와 같은 데이터 노출 및 Loss로 비교할 때는 다음 설정을 사용한다.
 
@@ -215,9 +217,15 @@ python evaluate_policy_exposure.py \
   --output runs/policy_exposure_structured_25_ce/policy_exposure_metrics.json
 ```
 
-이 경로는 Train history만 결정적으로 truncation하고, Val/Eval은 사용 가능한 전체 history를 최대 5까지
-사용한다. 중앙 15×15의 각 Cell에 Free/Obstacle 2 logits을 출력하며 기존 실험과 동일한 cell-wise mean CE로
-학습한다. 공유 설계의 weighted BCE+Dice 기본 경로는 별도로 유지된다.
+이 경로의 manifest는 `obstacles`, `positions` 배열을 가진 원본 episode NPZ를 가리킨다. Loader가 frame·Ego를 선택하고 17×17 halo map을 실시간으로 crop하며, Train history만 결정적으로 truncation하고 Val/Eval은 사용 가능한 history를 최대 5까지 사용한다. 중앙 15×15의 각 Cell에 Free/Obstacle 2 logits을 출력하며 기존 실험과 동일한 cell-wise mean CE로 학습한다.
+
+### 8.3 기존 Packed Policy Data와의 차이
+
+`.npz`는 파일 확장자이자 NumPy container일 뿐이므로, 내부 배열이 다르면 동일한 dataset이 아니다. 기존 packed policy data는 `local_map_bits`, `agent_payload`, `agent_valid_bits`, `track_reset_bits`, action/outcome 등을 frame·Ego 단위로 미리 계산한 형식이다. 반면 현재 Structured Map 학습은 원본 `obstacles`/`positions`에서 map history만 재구성하므로 두 형식은 직접 교체할 수 없다.
+
+`scripts/pack_eval_core_maps.py`가 만드는 `local_map_bits` NPZ도 15×15 core map만 보관하는 평가용 축약 형식이다. 이는 기존 packed policy dataset 전체 schema와 다르며, 현재 `PolicyHistoryHaloDataset`의 학습 입력으로도 직접 사용되지 않는다.
+
+공유 설계의 weighted BCE+Dice 기본 경로는 Policy-exposure의 cell-wise CE 경로와 별도로 유지된다.
 
 데이터 생성 예제:
 
