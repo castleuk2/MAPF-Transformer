@@ -1,19 +1,39 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
-import cppimport
 import numpy as np
 import torch
+from torch.utils.cpp_extension import load
 
 from ..config import ModelConfig
 from ..constants import Action, DeltaCTG
 from ..types import PolicyBatch
 
 
+_EXTENSION = None
+
+
 def _load_extension():
+    global _EXTENSION
+    if _EXTENSION is not None:
+        return _EXTENSION
+    # pip places the ninja executable next to the active Python interpreter.
+    # Ensure it is discoverable even when that interpreter was invoked by an
+    # absolute path without activating its environment first.
+    python_bin = str(Path(sys.executable).parent)
+    os.environ["PATH"] = python_bin + os.pathsep + os.environ.get("PATH", "")
     path = Path(__file__).with_name("_feature_generator.cpp")
-    return cppimport.imp_from_filepath(str(path), fullname="mapf_pct.cpp._feature_generator")
+    _EXTENSION = load(
+        name="mapf_pct_feature_generator",
+        sources=[str(path)],
+        extra_cflags=["-O3", "-std=c++17"],
+        with_cuda=False,
+        verbose=False,
+    )
+    return _EXTENSION
 
 
 class CppEpisodeFeatureGenerator:

@@ -1,9 +1,3 @@
-/*
-<%
-setup_pybind11(cfg)
-cfg['compiler_args'] = ['-O3', '-std=c++17']
-%>
-*/
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <algorithm>
@@ -165,7 +159,7 @@ class StatefulFeatureGenerator {
   }
 };
 
-PYBIND11_MODULE(_feature_generator, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   py::class_<StatefulFeatureGenerator>(m,"StatefulFeatureGenerator")
     .def(py::init<py::array_t<uint8_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,int,int,int,int,int,int,int>(),
          py::arg("obstacles"),py::arg("goals"),py::arg("core_size")=15,py::arg("local_size")=17,py::arg("max_agents")=25,py::arg("history_steps")=5,py::arg("max_hops")=1023,py::arg("goal_clip")=31,py::arg("contender_buckets")=8)

@@ -29,6 +29,7 @@ test -f src/mapf_pct/cpp/_feature_generator.cpp && echo "C++ source: OK"
 ```
 
 ```bash
+python -m pip install ninja
 python -m pip install -e . --no-build-isolation
 python build_cpp_extension.py
 ```
