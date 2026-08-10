@@ -15,11 +15,19 @@ from .types import stack_policy_batches
 class PreferenceCoordinationPolicy:
     """All-egos preference inference followed by one global CS-PIBT resolver."""
 
-    def __init__(self, checkpoint: str, device: str = "cuda:0") -> None:
+    def __init__(self, checkpoint: str, device: str = "cuda:0", *, feature_backend: str = "python") -> None:
+        if feature_backend not in {"python", "cpp"}:
+            raise ValueError("feature_backend must be 'python' or 'cpp'")
         self.device = torch.device(device)
         self.model, _ = load_checkpoint(checkpoint, map_location="cpu")
         self.model = self.model.to(self.device).eval()
         self.builder = EpisodeFeatureBuilder(self.model.config)
+        self.feature_backend = feature_backend
+        if feature_backend == "cpp":
+            from .cpp import CppEpisodeFeatureGenerator
+            self.cpp_builder = CppEpisodeFeatureGenerator(self.model.config)
+        else:
+            self.cpp_builder = None
         self.resolver = CSPIBTResolver()
         self.last_timing: dict[str, float] = {}
         self._timing_total: defaultdict[str, float] = defaultdict(float)
@@ -33,6 +41,8 @@ class PreferenceCoordinationPolicy:
         self.last_timing = {}
         self._timing_total.clear()
         self._timed_steps = 0
+        if self.cpp_builder is not None:
+            self.cpp_builder.reset()
 
     def _synchronize(self) -> None:
         if self.device.type == "cuda":
@@ -56,19 +66,23 @@ class PreferenceCoordinationPolicy:
         step_started = perf_counter()
         positions = np.asarray(positions, dtype=np.int16)
         goals = np.asarray(goals, dtype=np.int16)
-        self.position_history.append(positions.copy())
-        time_step = len(self.selected_history)
-        action_rows = self.selected_history + [np.zeros(positions.shape[0], dtype=np.uint8)]
-        episode = _Episode(
-            obstacles=np.asarray(obstacles, dtype=np.uint8),
-            positions=np.stack(self.position_history + [positions.copy()]),
-            goals=goals,
-            actions=np.stack(action_rows),
-        )
-        samples = [self.builder.build_episode(episode, time_step, ego) for ego in range(positions.shape[0])]
+        if self.cpp_builder is not None:
+            batch = self.cpp_builder.generate(obstacles, positions, goals)
+        else:
+            self.position_history.append(positions.copy())
+            time_step = len(self.selected_history)
+            action_rows = self.selected_history + [np.zeros(positions.shape[0], dtype=np.uint8)]
+            episode = _Episode(
+                obstacles=np.asarray(obstacles, dtype=np.uint8),
+                positions=np.stack(self.position_history + [positions.copy()]),
+                goals=goals,
+                actions=np.stack(action_rows),
+            )
+            samples = [self.builder.build_episode(episode, time_step, ego) for ego in range(positions.shape[0])]
+            batch = stack_policy_batches(samples)
         feature_done = perf_counter()
 
-        batch = stack_policy_batches(samples).to(self.device)
+        batch = batch.to(self.device)
         self._synchronize()
         batch_done = perf_counter()
 
@@ -78,6 +92,8 @@ class PreferenceCoordinationPolicy:
         self._synchronize()
         forward_done = perf_counter()
         self.selected_history.append(selected)
+        if self.cpp_builder is not None:
+            self.cpp_builder.commit_actions(selected)
 
         on_goal = np.all(positions == goals, axis=1)
         if self.wait_age is None or self.wait_age.shape[0] != positions.shape[0]:

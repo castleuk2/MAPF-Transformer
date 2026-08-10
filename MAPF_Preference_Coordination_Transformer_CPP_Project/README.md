@@ -4,8 +4,24 @@
 Python 기반 Ego feature 생성을 상태형 C++ generator로 교체하기 위한 독립 개발본이다.
 원본은 상위의 `MAPF_Preference_Coordination_Transformer_Project`에 그대로 보존한다.
 
-현재 단계에서는 원본 코드의 기준 동작과 Runtime 구간별 계측을 복제한 상태이며,
-C++ 출력은 Python `PolicyBatch`와 필드별로 동일해야 한다.
+상태형 C++ Runtime generator가 구현되어 있으며 Python `PolicyBatch` 기준 구현과
+필드별 parity test를 수행한다. 학습 Dataset builder는 재현성을 위해 Python 기준 구현을 유지한다.
+
+```python
+from mapf_pct.runtime import PreferenceCoordinationPolicy
+
+policy = PreferenceCoordinationPolicy(
+    "runs/model/best.pt",
+    device="cuda:0",
+    feature_backend="cpp",
+)
+```
+
+Feature 생성 속도는 다음 명령으로 비교할 수 있다.
+
+```bash
+PYTHONPATH=src python benchmark_feature_generators.py --steps 30 episode_n16.npz episode_n24.npz episode_n32.npz
+```
 
 25개의 Structured Map token과 25명 agent의 구조화된 Entity–History–Action token을 결합하여, expert MAPF action preference와 다중-agent coordination을 학습하는 PyTorch 연구 프로젝트이다.
 
