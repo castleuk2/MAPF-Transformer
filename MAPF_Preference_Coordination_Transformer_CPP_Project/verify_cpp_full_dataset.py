@@ -123,6 +123,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=max(1, min(4, (os.cpu_count() or 2) // 2)))
     parser.add_argument("--goal-wait-keep-ratio", type=float, default=0.2)
     parser.add_argument("--max-records-per-split", type=int, default=None)
+    parser.add_argument("--sample-fraction", type=float, default=None)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results_path = args.output_dir / "episode_results.jsonl"
@@ -133,6 +134,15 @@ def main() -> None:
             completed.add((row["split"], int(row["record_index"])))
     train_records = load_records(args.train_manifest.resolve(), "train")
     val_records = load_records(args.val_manifest.resolve(), "val")
+    if args.sample_fraction is not None:
+        if not 0.0 < args.sample_fraction <= 1.0:
+            parser.error("--sample-fraction must be in (0,1]")
+        def spread(records: list[dict]) -> list[dict]:
+            count = max(1, int(round(len(records) * args.sample_fraction)))
+            indices = np.linspace(0, len(records) - 1, num=count, dtype=np.int64)
+            return [records[int(index)] for index in indices]
+        train_records = spread(train_records)
+        val_records = spread(val_records)
     if args.max_records_per_split is not None:
         train_records = train_records[: args.max_records_per_split]
         val_records = val_records[: args.max_records_per_split]
