@@ -80,6 +80,13 @@ def main() -> None:
         step = int(checkpoint.get("step", 0))
         start_epoch = int(checkpoint.get("epoch", 0))
         best = float(checkpoint.get("metrics", {}).get("val_total", float("inf")))
+        existing_best_path = output_dir / "best.pt"
+        if existing_best_path.exists():
+            existing_best = torch.load(existing_best_path, map_location="cpu", weights_only=False)
+            best = min(
+                best,
+                float(existing_best.get("metrics", {}).get("val_total", float("inf"))),
+            )
         if start_epoch >= config.training.epochs:
             raise ValueError(
                 f"checkpoint epoch={start_epoch} already reaches requested epochs={config.training.epochs}"
