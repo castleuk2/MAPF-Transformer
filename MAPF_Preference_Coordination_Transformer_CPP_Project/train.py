@@ -51,6 +51,9 @@ def build_dataset(config: ProjectConfig, train: bool):
         manifest = data.train_manifest if train else data.val_manifest
         if manifest is None:
             raise ValueError("train_manifest/val_manifest is required for npz_manifest data")
+        manifest = Path(manifest)
+        if not manifest.is_absolute():
+            manifest = (ROOT / manifest).resolve()
         dataset = EpisodeSequenceSampleDataset(
             config.model,
             manifest,

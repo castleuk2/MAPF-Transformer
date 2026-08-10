@@ -10,7 +10,7 @@ model:
   enable_reason_head: true
   enable_conflict_head: true
   enable_scene_risk_head: true
-  map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
+  map_checkpoint: checkpoints/structured_map_policy_exposure_best.pt
   freeze_map_encoder: true
 
 training:
@@ -41,8 +41,8 @@ training:
 
 data:
   kind: npz_manifest
-  train_manifest: data/mapf_lns2_1h/train_manifest.jsonl
-  val_manifest: data/mapf_lns2_1h/val_manifest.jsonl
+  train_manifest: ../pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
+  val_manifest: ../pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
   coordinate_order: row_col
   task_mode: one_shot
   target_mode: stay

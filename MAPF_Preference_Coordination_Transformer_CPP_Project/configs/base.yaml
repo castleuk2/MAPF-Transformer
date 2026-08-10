@@ -10,7 +10,7 @@ model:
   enable_reason_head: true
   enable_conflict_head: true
   enable_scene_risk_head: true
-  map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
+  map_checkpoint: checkpoints/structured_map_policy_exposure_best.pt
   freeze_map_encoder: true
 
 training:
