@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="760" viewBox="0 0 1600 760">
+<style>
+  text{font-family:Arial,Helvetica,sans-serif;fill:#172033}.title{font-size:34px;font-weight:700}.head{font-size:21px;font-weight:700}.body{font-size:16px}.small{font-size:14px}.box{rx:18;ry:18;stroke-width:2.5}.arrow{stroke:#394150;stroke-width:3;fill:none;marker-end:url(#a)}
+</style>
+<defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#394150"/></marker></defs>
+<rect width="1600" height="760" fill="white"/>
+<text x="800" y="52" text-anchor="middle" class="title">Preference–Coordination Transformer for MAPF</text>
+
+<rect class="box" x="35" y="100" width="275" height="130" fill="#eef5ff" stroke="#2962cc"/>
+<text x="172" y="132" text-anchor="middle" class="head">Structured Map Encoder</text>
+<text x="172" y="165" text-anchor="middle" class="body">17×17 → 5×5 patches</text>
+<text x="172" y="191" text-anchor="middle" class="body">25 Map Tokens</text>
+<text x="172" y="215" text-anchor="middle" class="small">34-D patch + relative/connectivity bias</text>
+
+<rect class="box" x="35" y="260" width="275" height="185" fill="#effbf2" stroke="#23824f"/>
+<text x="172" y="293" text-anchor="middle" class="head">Agent Micro Encoder</text>
+<text x="172" y="329" text-anchor="middle" class="body">25 Agents × 8 Tokens</text>
+<text x="172" y="360" text-anchor="middle" class="body">1 Entity + 2 History</text>
+<text x="172" y="390" text-anchor="middle" class="body">+ 5 Action Candidates</text>
+<text x="172" y="424" text-anchor="middle" class="head">= 200 Agent Tokens</text>
+
+<rect class="box" x="35" y="475" width="275" height="145" fill="#fff5e9" stroke="#d96b13"/>
+<text x="172" y="508" text-anchor="middle" class="head">Additional Context</text>
+<text x="172" y="540" text-anchor="middle" class="body">24 Relation + 5 Event</text>
+<text x="172" y="570" text-anchor="middle" class="body">1 Scene + 1 ACT</text>
+<text x="172" y="603" text-anchor="middle" class="head">Total = 256 Tokens</text>
+
+<rect class="box" x="385" y="155" width="275" height="175" fill="#eef5ff" stroke="#2962cc"/>
+<text x="522" y="192" text-anchor="middle" class="head">Candidate-to-Map</text>
+<text x="522" y="220" text-anchor="middle" class="head">Cross-Attention</text>
+<text x="522" y="260" text-anchor="middle" class="body">125 candidate queries</text>
+<text x="522" y="287" text-anchor="middle" class="body">25 patch keys / values</text>
+<text x="522" y="314" text-anchor="middle" class="small">target-patch relative bias</text>
+
+<rect class="box" x="385" y="370" width="275" height="165" fill="#fff5e9" stroke="#d96b13"/>
+<text x="522" y="407" text-anchor="middle" class="head">Explicit Relation Builder</text>
+<text x="522" y="447" text-anchor="middle" class="body">Top-24 high-risk pairs</text>
+<text x="522" y="475" text-anchor="middle" class="body">vertex / edge swap</text>
+<text x="522" y="503" text-anchor="middle" class="body">corridor / congestion / priority</text>
+
+<rect class="box" x="745" y="135" width="355" height="425" fill="#fff9ed" stroke="#d96b13"/>
+<text x="922" y="176" text-anchor="middle" class="head">Coordination Transformer ×4</text>
+<rect class="box" x="785" y="215" width="125" height="100" fill="#effbf2" stroke="#23824f"/><text x="847" y="255" text-anchor="middle" class="body">Entity /</text><text x="847" y="282" text-anchor="middle" class="body">History</text>
+<rect class="box" x="935" y="215" width="125" height="100" fill="#effbf2" stroke="#23824f"/><text x="997" y="255" text-anchor="middle" class="body">Action</text><text x="997" y="282" text-anchor="middle" class="body">Candidates</text>
+<rect class="box" x="785" y="350" width="125" height="100" fill="#fff5e9" stroke="#d96b13"/><text x="847" y="390" text-anchor="middle" class="body">Relation</text><text x="847" y="417" text-anchor="middle" class="body">Tokens</text>
+<rect class="box" x="935" y="350" width="125" height="100" fill="#f4efff" stroke="#6e3dbb"/><text x="997" y="390" text-anchor="middle" class="body">Event /</text><text x="997" y="417" text-anchor="middle" class="body">Scene / ACT</text>
+<path class="arrow" d="M910 265 L935 265"/><path class="arrow" d="M935 400 L910 400"/><path class="arrow" d="M847 315 L847 350"/><path class="arrow" d="M997 315 L997 350"/><path class="arrow" d="M900 315 L955 350"/><path class="arrow" d="M955 315 L900 350"/>
+<text x="922" y="505" text-anchor="middle" class="body">Bidirectional type-biased coordination</text>
+<text x="922" y="535" text-anchor="middle" class="small">Scene = global aggregator and broadcaster</text>
+
+<rect class="box" x="1180" y="150" width="220" height="205" fill="#f4efff" stroke="#6e3dbb"/>
+<text x="1290" y="190" text-anchor="middle" class="head">Prediction Heads</text>
+<text x="1290" y="230" text-anchor="middle" class="body">25×5 Action Preference</text>
+<text x="1290" y="263" text-anchor="middle" class="body">Conflict Auxiliary</text>
+<text x="1290" y="296" text-anchor="middle" class="body">Reason Auxiliary</text>
+<text x="1290" y="329" text-anchor="middle" class="body">Scene Risk Auxiliary</text>
+
+<rect class="box" x="1180" y="405" width="220" height="155" fill="#eef2ff" stroke="#243b88"/>
+<text x="1290" y="445" text-anchor="middle" class="head">CS-PIBT-style Resolver</text>
+<text x="1290" y="485" text-anchor="middle" class="body">priority inheritance</text>
+<text x="1290" y="513" text-anchor="middle" class="body">reservation + backtracking</text>
+<text x="1290" y="541" text-anchor="middle" class="body">collision-free joint action</text>
+
+<path class="arrow" d="M310 165 L385 215"/><path class="arrow" d="M310 350 L385 260"/><path class="arrow" d="M310 545 L385 450"/>
+<path class="arrow" d="M660 240 L745 270"/><path class="arrow" d="M660 450 L745 405"/>
+<path class="arrow" d="M1100 300 L1180 250"/><path class="arrow" d="M1290 355 L1290 405"/>
+<rect class="box" x="1135" y="610" width="315" height="95" fill="#eef2ff" stroke="#243b88"/>
+<text x="1292" y="650" text-anchor="middle" class="head">Final Joint Action</text>
+<text x="1292" y="681" text-anchor="middle" class="body">ego action + coordinated neighbors</text>
+<path class="arrow" d="M1290 560 L1290 610"/>
+
+<rect class="box" x="350" y="625" width="690" height="80" fill="#fafafa" stroke="#7d8797"/>
+<text x="695" y="658" text-anchor="middle" class="body">All-agent expert supervision from recentered ego views</text>
+<text x="695" y="686" text-anchor="middle" class="body">Ego action remains the primary deployment output</text>
+</svg>
