@@ -7,10 +7,12 @@ epoch3_best=${2:-$(dirname "$checkpoint")/best.pt}
 cd "$project_root"
 mkdir -p runs/mpct_balanced_val_6epoch
 if [[ -f "$epoch3_best" ]]; then
-  cp -n "$epoch3_best" runs/mpct_balanced_val_6epoch/best.pt
+  cp --update=none "$epoch3_best" runs/mpct_balanced_val_6epoch/best.pt
 fi
 
-CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1} torchrun --standalone --nproc_per_node=2 \
+python_bin=${PYTHON:-python}
+CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1} "$python_bin" -m torch.distributed.run \
+  --standalone --nproc_per_node=2 \
   train_ddp.py --config configs/balanced_val_6epoch.yaml \
   --output-dir runs/mpct_balanced_val_6epoch --resume "$checkpoint" \
   2>&1 | tee runs/mpct_balanced_val_6epoch/console.log
