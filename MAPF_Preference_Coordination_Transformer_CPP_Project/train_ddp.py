@@ -24,6 +24,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="2-GPU DDP MPCT retraining with full loss tracking")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--resume", type=Path, default=None,
+        help="Continue from a last.pt checkpoint (model, optimizer, epoch, and step)",
+    )
     return parser.parse_args()
 
 
@@ -68,6 +72,20 @@ def main() -> None:
         lr=config.training.learning_rate, weight_decay=config.training.weight_decay,
         betas=(config.training.beta1, config.training.beta2),
     )
+    best = float("inf"); step = 0; start_epoch = 0
+    if args.resume is not None:
+        checkpoint = torch.load(args.resume.expanduser().resolve(), map_location="cpu", weights_only=False)
+        raw_model.load_state_dict(checkpoint["model"], strict=True)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        step = int(checkpoint.get("step", 0))
+        start_epoch = int(checkpoint.get("epoch", 0))
+        best = float(checkpoint.get("metrics", {}).get("val_total", float("inf")))
+        if start_epoch >= config.training.epochs:
+            raise ValueError(
+                f"checkpoint epoch={start_epoch} already reaches requested epochs={config.training.epochs}"
+            )
+        if rank == 0:
+            print(f"resume={args.resume} next_epoch={start_epoch + 1} step={step}", flush=True)
     total_updates = len(train_loader) * config.training.epochs
     def lr_factor(update: int) -> float:
         warmup = min(config.training.warmup_steps, total_updates)
@@ -76,12 +94,11 @@ def main() -> None:
         progress = (update - warmup) / max(1, total_updates - warmup)
         minimum = config.training.min_learning_rate / config.training.learning_rate
         return minimum + 0.5 * (1.0 - minimum) * (1.0 + math.cos(math.pi * min(1.0, progress)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor, last_epoch=step - 1)
     scaler = torch.amp.GradScaler("cuda", enabled=config.training.amp)
-    best = float("inf"); step = 0
     component_names = ("action", "ego_action", "neighbor_action", "act_request", "map", "conflict", "reason", "scene_risk", "total")
 
-    for epoch in range(config.training.epochs):
+    for epoch in range(start_epoch, config.training.epochs):
         sampler.set_epoch(epoch); model.train()
         sums = torch.zeros(len(component_names) + 2, device=device, dtype=torch.float64)
         for batch in train_loader:

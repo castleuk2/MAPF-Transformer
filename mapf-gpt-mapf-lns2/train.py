@@ -32,6 +32,7 @@ log_interval = 1
 eval_iters = 40
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 init_from = "scratch"  # 'scratch' or 'resume' or 'gpt2*'
+resume_from = ""  # optional explicit checkpoint; defaults to out_dir/ckpt.pt
 
 gradient_accumulation_steps = 16  # used to simulate larger batch sizes
 batch_size = 64  # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -190,7 +191,7 @@ if init_from == "scratch":
 elif init_from == "resume":
     logger.info(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, "ckpt.pt")
+    ckpt_path = resume_from or os.path.join(out_dir, "ckpt.pt")
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint["model_args"]
     # force these config attributes to be equal otherwise we can't even resume training
@@ -314,6 +315,7 @@ while True:
                     }
                     logger.info(f"saving checkpoint to {out_dir}")
                     torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+                    torch.save(checkpoint, os.path.join(out_dir, "best.pt"))
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
