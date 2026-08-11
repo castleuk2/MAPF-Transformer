@@ -102,33 +102,17 @@ class StructuredAttentionBias(nn.Module):
         device = batch.local_maps.device
         base = self._static_bias(device, dtype).unsqueeze(0).expand(b, -1, -1, -1).clone()
 
-        # Current-to-history same-track identity is dynamic because history tracks
-        # are selected by global identity, not by fixed rank.
-        for bi in range(b):
-            for track in range(cfg.history_tracks):
-                slot = int(batch.history_track_current_slot[bi, track].item())
-                if slot < 0 or slot >= cfg.max_current_agents:
-                    continue
-                current_start = cfg.current_offset + slot * cfg.current_tokens_per_agent
-                current_idx = torch.arange(
-                    current_start,
-                    current_start + cfg.current_tokens_per_agent,
-                    device=device,
-                )
-                hist_idx_parts = []
-                for lag in range(cfg.history_steps):
-                    start = (
-                        cfg.history_offset
-                        + lag * cfg.history_tracks * cfg.history_tokens_per_step
-                        + track * cfg.history_tokens_per_step
-                    )
-                    hist_idx_parts.append(
-                        torch.arange(start, start + cfg.history_tokens_per_step, device=device)
-                    )
-                hist_idx = torch.cat(hist_idx_parts)
-                value = self.current_history_track_bias[:, None, None]
-                base[bi, :, current_idx[:, None], hist_idx[None, :]] += value
-                base[bi, :, hist_idx[:, None], current_idx[None, :]] += value.transpose(-1, -2)
+        current_agent = self.current_agent.to(device)
+        history_track = self.history_track.to(device)
+        safe_track = history_track.clamp_min(0)
+        track_slot = batch.history_track_current_slot[:, safe_track]
+        current_to_history = (
+            (current_agent[None, :, None] >= 0)
+            & (history_track[None, None, :] >= 0)
+            & (current_agent[None, :, None] == track_slot[:, None, :])
+        )
+        current_history = current_to_history | current_to_history.transpose(-1, -2)
+        base += self.current_history_track_bias[None, :, None, None] * current_history[:, None]
 
         # Candidate-pair relations: all pairs are represented as score bias, so
         # there is no Top-K relation-token truncation.
@@ -183,16 +167,15 @@ class StructuredAttentionBias(nn.Module):
         source_patch_idx = source_patch[..., 0] * pps + source_patch[..., 1]
         target_patch_idx = target_patch[..., 0] * pps + target_patch[..., 1]
         target_ok = batch.candidate_in_core.reshape(b, q)
-        for bi in range(b):
-            for qi in range(q):
-                if not bool(valid[bi, qi]):
-                    continue
-                token_idx = int(ci[qi])
-                source_idx = int(source_patch_idx[bi, qi])
-                base[bi, :, token_idx, source_idx] += self.candidate_source_map_bias
-                base[bi, :, source_idx, token_idx] += self.candidate_source_map_bias
-                if bool(target_ok[bi, qi]):
-                    target_idx = int(target_patch_idx[bi, qi])
-                    base[bi, :, token_idx, target_idx] += self.candidate_target_map_bias
-                    base[bi, :, target_idx, token_idx] += self.candidate_target_map_bias
+        batch_index = torch.arange(b, device=device)[:, None, None]
+        head_index = torch.arange(cfg.n_heads, device=device)[None, :, None]
+        token_index = ci[None, None, :]
+        source_index = source_patch_idx[:, None, :]
+        target_index = target_patch_idx[:, None, :]
+        source_value = valid[:, None, :].to(dtype) * self.candidate_source_map_bias[None, :, None]
+        target_value = (valid & target_ok)[:, None, :].to(dtype) * self.candidate_target_map_bias[None, :, None]
+        base[batch_index, head_index, token_index, source_index] += source_value
+        base[batch_index, head_index, source_index, token_index] += source_value
+        base[batch_index, head_index, token_index, target_index] += target_value
+        base[batch_index, head_index, target_index, token_index] += target_value
         return base

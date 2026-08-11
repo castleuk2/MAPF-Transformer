@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -59,6 +60,38 @@ class MultiheadAttentionWithBias(nn.Module):
         q = self._split(self.q_proj(query))
         k = self._split(self.k_proj(key))
         v = self._split(self.v_proj(value))
+
+        # Keep the explicit path when weights are requested for diagnostics.
+        # Training uses PyTorch's fused scaled-dot-product implementation.
+        if not return_weights:
+            additive_mask = None
+            if attn_bias is not None:
+                if attn_bias.ndim == 3:
+                    attn_bias = attn_bias.unsqueeze(0)
+                additive_mask = attn_bias.to(dtype=q.dtype, device=q.device)
+            if key_padding_mask is not None:
+                padding = key_padding_mask.bool()[:, None, None, :]
+                if additive_mask is None:
+                    additive_mask = torch.zeros(
+                        q.shape[0], 1, q.shape[-2], k.shape[-2],
+                        dtype=q.dtype, device=q.device,
+                    )
+                additive_mask = additive_mask.masked_fill(
+                    padding, torch.finfo(q.dtype).min
+                )
+            attended = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=additive_mask,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False,
+            )
+            attended = attended.transpose(1, 2).contiguous().view(
+                query.shape[0], query.shape[1], self.d_model
+            )
+            output = self.out_proj(attended)
+            if query_padding_mask is not None:
+                output = output.masked_fill(query_padding_mask.bool()[..., None], 0.0)
+            return output, None
+
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         if attn_bias is not None:

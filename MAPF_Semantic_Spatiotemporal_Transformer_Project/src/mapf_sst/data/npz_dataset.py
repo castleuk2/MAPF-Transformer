@@ -23,6 +23,11 @@ class Episode:
     goals: np.ndarray
     actions: np.ndarray
     distance_cache: dict[tuple[int, int], np.ndarray] = field(default_factory=dict)
+    candidate_cache: dict[
+        tuple[int, int], tuple[set[tuple[int, int]], set[tuple[int, int]]]
+    ] = field(default_factory=dict)
+    visible_cache: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict)
+    degree_map: np.ndarray | None = None
 
 
 class EpisodeFeatureBuilder:
@@ -64,6 +69,7 @@ class EpisodeFeatureBuilder:
                 goals=self._rc(np.asarray(data["goals"], dtype=np.int64)),
                 actions=np.asarray(data["actions"], dtype=np.int64),
             )
+            episode.degree_map = self._degree_map(episode.obstacles)
         self._cache[path] = episode
         while len(self._cache) > self.cache_size:
             self._cache.popitem(last=False)
@@ -75,12 +81,24 @@ class EpisodeFeatureBuilder:
         result = np.ones((size, size), dtype=np.uint8)
         h, w = obstacles.shape
         r0, c0 = int(center[0]) - radius, int(center[1]) - radius
-        for lr in range(size):
-            for lc in range(size):
-                rr, cc = r0 + lr, c0 + lc
-                if 0 <= rr < h and 0 <= cc < w:
-                    result[lr, lc] = obstacles[rr, cc]
+        gr0, gc0 = max(r0, 0), max(c0, 0)
+        gr1, gc1 = min(r0 + size, h), min(c0 + size, w)
+        if gr0 < gr1 and gc0 < gc1:
+            lr0, lc0 = gr0 - r0, gc0 - c0
+            result[lr0 : lr0 + gr1 - gr0, lc0 : lc0 + gc1 - gc0] = obstacles[
+                gr0:gr1, gc0:gc1
+            ]
         return result
+
+    @staticmethod
+    def _degree_map(obstacles: np.ndarray) -> np.ndarray:
+        free = obstacles == 0
+        degree = np.zeros(obstacles.shape, dtype=np.uint8)
+        degree[1:, :] += free[:-1, :]
+        degree[:-1, :] += free[1:, :]
+        degree[:, 1:] += free[:, :-1]
+        degree[:, :-1] += free[:, 1:]
+        return degree
 
     @staticmethod
     def _distance_map(obstacles: np.ndarray, goal: tuple[int, int]) -> np.ndarray:
@@ -124,29 +142,29 @@ class EpisodeFeatureBuilder:
             return int(Action.UNKNOWN)
 
     @staticmethod
-    def _degree(obstacles: np.ndarray, target: tuple[int, int]) -> int:
-        h, w = obstacles.shape
-        degree = 0
-        for dr, dc in ACTION_DELTAS[1:]:
-            rr, cc = target[0] + dr, target[1] + dc
-            if 0 <= rr < h and 0 <= cc < w and obstacles[rr, cc] == 0:
-                degree += 1
-        return degree
+    def _degree(episode: Episode, target: tuple[int, int]) -> int:
+        assert episode.degree_map is not None
+        return int(episode.degree_map[target])
 
     def _visible(self, episode: Episode, step: int, ego: int) -> list[int]:
+        key = (step, ego)
+        if key in episode.visible_cache:
+            return list(episode.visible_cache[key])
         radius = self.config.core_map_size // 2
         pos = episode.positions[step]
         center = pos[ego]
-        return [
-            gid
-            for gid in range(pos.shape[0])
-            if abs(int(pos[gid, 0] - center[0])) <= radius
-            and abs(int(pos[gid, 1] - center[1])) <= radius
-        ]
+        relative = np.abs(pos - center)
+        result = tuple(np.flatnonzero((relative[:, 0] <= radius) & (relative[:, 1] <= radius)).tolist())
+        episode.visible_cache[key] = result
+        return list(result)
 
     def _candidate_sets(
         self, episode: Episode, step: int, gid: int
     ) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+        cache_key = (step, gid)
+        cached = episode.candidate_cache.get(cache_key)
+        if cached is not None:
+            return cached
         position = episode.positions[step, gid]
         goal = tuple(map(int, self._goals_at(episode, step)[gid]))
         dist = self._distance(episode, goal)
@@ -167,7 +185,9 @@ class EpisodeFeatureBuilder:
                 greedy.add(target)
         if tuple(position) == goal:
             greedy.add(tuple(map(int, position)))
-        return feasible, greedy
+        result = (feasible, greedy)
+        episode.candidate_cache[cache_key] = result
+        return result
 
     def _rank_current(self, episode: Episode, step: int, ego: int) -> list[int]:
         visible = [gid for gid in self._visible(episode, step, ego) if gid != ego]
@@ -185,7 +205,7 @@ class EpisodeFeatureBuilder:
             )
             overlap = len(ego_feasible & feasible)
             corridor = any(
-                self._degree(episode.obstacles, target) <= 2
+                self._degree(episode, target) <= 2
                 for target in (ego_greedy & greedy)
             )
             distance = int(np.abs(positions[gid] - positions[ego]).sum())
@@ -303,9 +323,7 @@ class EpisodeFeatureBuilder:
                     delta_ctg[slot, action] = int(DeltaCTG.INCREASE)
                 else:
                     delta_ctg[slot, action] = int(DeltaCTG.SAME)
-                bottleneck[slot, action] = self._degree(
-                    episode.obstacles, target_global
-                ) <= 2
+                bottleneck[slot, action] = self._degree(episode, target_global) <= 2
             if current_hops[slot] == 0:
                 greedy[slot, int(Action.WAIT)] = True
 

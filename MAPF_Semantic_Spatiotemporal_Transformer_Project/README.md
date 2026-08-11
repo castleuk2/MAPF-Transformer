@@ -238,6 +238,30 @@ python -m torch.distributed.run --standalone --nproc_per_node=2 \
 Rounds=4는 각 frame에서 총 5번 forward하므로 rounds=0 baseline보다 계산량이
 크며, 단순히 여러 Ego view를 batch로 묶는 것과 달리 실제 cross-view message가 전달됨.
 
+## 14. 학습 속도 최적화
+
+초기 구현은 batch의 동적 current↔history 및 candidate↔map bias를 Python 이중
+반복문으로 갱신했음. Batch 128에서는 GPU 한 장당 forward마다 약 9,856회의 scalar
+CUDA 접근과 작은 indexing kernel이 발생했으며, 이것이 MPCT보다 현저히 느렸던 주원인임.
+
+현재 구현은 의미와 수식을 유지하면서 다음을 적용함.
+
+- 동적 structured bias를 batch tensor 연산으로 완전 벡터화
+- 256-token dense attention을 PyTorch fused SDPA로 실행
+- local-map crop, visible-agent 검색, cell degree를 NumPy 벡터 연산으로 변경
+- candidate/visibility feature를 episode 단위로 cache
+- DDP graph를 static graph로 고정하고 100 step마다 실제 samples/s 기록
+
+실제 NPZ 6개 sample의 모든 tensor hash는 변경 전과 일치하고, unit test 16개 및
+attention 수치 동등성 검사를 통과함. 동일 장비의 2-GPU, per-GPU batch 128 probe에서
+100 update를 약 10.7초, 2,390.6 samples/s로 처리했음. 짧은 속도 검사는 다음과 같음.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 PYTHONPATH=src:../mapf-structured-map-transformer/src \
+python -m torch.distributed.run --standalone --nproc_per_node=2 \
+  train_ddp.py --config configs/same_data_6epoch.yaml --max-updates 100
+```
+
 ## 14. 추론
 
 단일 Ego preference:

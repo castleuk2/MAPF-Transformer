@@ -5,6 +5,7 @@ import json
 import math
 import os
 import shutil
+import time
 from pathlib import Path
 
 import torch
@@ -27,6 +28,7 @@ ROOT = Path(__file__).resolve().parent
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Two-GPU SST 3/6-epoch training")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--max-updates", type=int, default=None)
     return parser.parse_args()
 
 
@@ -84,7 +86,7 @@ def main() -> None:
         raise RuntimeError("frozen Map contract failed")
     # The no-communication baseline intentionally leaves message-slot parameters
     # unused; DDP must therefore discover unused parameters for this run.
-    model = DDP(raw_model, device_ids=[local_rank], find_unused_parameters=True)
+    model = DDP(raw_model, device_ids=[local_rank], find_unused_parameters=False, static_graph=True)
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(
         trainable,
@@ -112,6 +114,7 @@ def main() -> None:
     )
     best = float("inf")
     step = 0
+    log_time = time.perf_counter()
 
     for epoch in range(config.training.epochs):
         train_sampler.set_epoch(epoch)
@@ -143,11 +146,16 @@ def main() -> None:
             sums[-2] += (output.ego_logits.argmax(-1) == batch.ego_action).sum()
             sums[-1] += count
             if rank == 0 and step % 100 == 0:
+                now = time.perf_counter()
+                throughput = 100 * local_batch * world_size / (now - log_time)
                 print(
                     f"epoch={epoch + 1} step={step} lr={optimizer.param_groups[0]['lr']:.8f} "
-                    f"loss={float(losses.total.detach()):.6f}",
+                    f"loss={float(losses.total.detach()):.6f} samples_per_s={throughput:.1f}",
                     flush=True,
                 )
+                log_time = now
+            if args.max_updates is not None and step >= args.max_updates:
+                break
 
         dist.all_reduce(sums, op=dist.ReduceOp.SUM)
         count = float(sums[-1])
@@ -156,6 +164,9 @@ def main() -> None:
             for index, name in enumerate(component_names)
         }
         train_metrics["train_ego_accuracy"] = float(sums[-2] / sums[-1])
+
+        if args.max_updates is not None and step >= args.max_updates:
+            break
 
         if rank == 0:
             assert val_loader is not None
