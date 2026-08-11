@@ -39,8 +39,9 @@ class MultiRoundCommunicationPolicy(nn.Module):
     ) -> CommunicationOutput:
         if rounds < 1:
             raise ValueError("communication rounds must be at least one")
-        first = self.local_policy(
-            batch,
+        prepared = self.local_policy.prepare_context(batch)
+        first = self.local_policy.forward_prepared(
+            prepared,
             coordination_mode="query_only",
             return_tokens=return_tokens,
         )
@@ -50,8 +51,8 @@ class MultiRoundCommunicationPolicy(nn.Module):
         final = first
         for _ in range(rounds):
             neighbor_messages = self._gather_messages(messages, graph)
-            final = self.local_policy(
-                batch,
+            final = self.local_policy.forward_prepared(
+                prepared,
                 coordination_mode="messages",
                 neighbor_messages=neighbor_messages,
                 neighbor_message_valid=graph.neighbor_valid,

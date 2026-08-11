@@ -34,3 +34,43 @@ def test_multi_round_gradients_reach_sender(cfg):
     loss.backward()
     assert base.message_query.grad is not None
     assert torch.isfinite(base.message_query.grad).all()
+
+
+def test_round_invariant_context_is_prepared_once(cfg):
+    batch, graph = make_synthetic_communication_group(cfg, views=4, seed=11)
+    base = SemanticSpatiotemporalPolicy(cfg)
+    wrapper = MultiRoundCommunicationPolicy(base)
+    calls = 0
+    original = base.prepare_context
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    base.prepare_context = counted
+    output = wrapper(batch, graph, rounds=4)
+    output.final.ego_logits.sum().backward()
+    assert calls == 1
+
+
+def test_cached_rounds_match_recomputed_eval_path(cfg):
+    batch, graph = make_synthetic_communication_group(cfg, views=4, seed=12)
+    base = SemanticSpatiotemporalPolicy(cfg).eval()
+    wrapper = MultiRoundCommunicationPolicy(base).eval()
+    with torch.no_grad():
+        cached = wrapper(batch, graph, rounds=2).final
+        legacy = base(batch, coordination_mode="query_only")
+        messages = legacy.self_message
+        for _ in range(2):
+            gathered = wrapper._gather_messages(messages, graph)
+            legacy = base(
+                batch,
+                coordination_mode="messages",
+                neighbor_messages=gathered,
+                neighbor_message_valid=graph.neighbor_valid,
+                neighbor_message_source_slot=graph.neighbor_current_slot,
+            )
+            messages = legacy.self_message
+    torch.testing.assert_close(cached.ego_logits, legacy.ego_logits)
+    torch.testing.assert_close(cached.self_message, legacy.self_message)

@@ -12,6 +12,7 @@ dependencies = [
   "torch>=2.2",
   "numpy>=1.26",
   "PyYAML>=6.0",
+  "ninja>=1.11",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,9 @@ dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"mapf_sst.cpp" = ["*.cpp"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

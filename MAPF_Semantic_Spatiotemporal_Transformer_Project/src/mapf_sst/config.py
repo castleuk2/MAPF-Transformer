@@ -168,6 +168,7 @@ class DataConfig:
     grouped_val_frames: int = 600
     coordinate_order: str = "row_col"  # row_col | xy
     task_mode: str = "classic"
+    feature_backend: str = "python"  # python | cpp
 
 
 @dataclass(slots=True)

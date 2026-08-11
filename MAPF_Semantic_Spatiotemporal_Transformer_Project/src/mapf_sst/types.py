@@ -102,6 +102,17 @@ class PolicyOutput:
 
 
 @dataclass(slots=True)
+class PreparedPolicyContext:
+    """Round-invariant tensors computed once for multi-round communication."""
+
+    batch: PolicyBatch
+    static_tokens: torch.Tensor                  # [B,249,D], field-encoded
+    static_padding: torch.Tensor                 # [B,249]
+    attention_bias: torch.Tensor | None           # [B,H,256,256]
+    map_reconstruction_logits: torch.Tensor | None
+
+
+@dataclass(slots=True)
 class CommunicationOutput:
     first_pass: PolicyOutput
     final: PolicyOutput
@@ -121,3 +132,39 @@ def stack_policy_batches(samples: list[PolicyBatch]) -> PolicyBatch:
         else:
             values[field.name] = torch.stack(items, dim=0)
     return PolicyBatch(**values)
+
+
+def concatenate_policy_batches(batches: list[PolicyBatch]) -> PolicyBatch:
+    """Concatenate already-batched ego views from multiple MAPF frames."""
+    if not batches:
+        raise ValueError("batches must not be empty")
+    values: dict[str, torch.Tensor | None] = {}
+    for field in fields(PolicyBatch):
+        items = [getattr(batch, field.name) for batch in batches]
+        if items[0] is None:
+            if any(item is not None for item in items):
+                raise ValueError(f"mixed None/non-None field: {field.name}")
+            values[field.name] = None
+        else:
+            values[field.name] = torch.cat(items, dim=0)
+    return PolicyBatch(**values)
+
+
+def concatenate_communication_graphs(
+    graphs: list[CommunicationGraph], view_counts: list[int]
+) -> CommunicationGraph:
+    """Concatenate frame-local graphs and offset their flattened view indices."""
+    if len(graphs) != len(view_counts) or not graphs:
+        raise ValueError("graphs and view_counts must have the same non-zero length")
+    indices = []
+    offset = 0
+    for graph, count in zip(graphs, view_counts):
+        indices.append(graph.neighbor_view_index + offset)
+        offset += count
+    return CommunicationGraph(
+        neighbor_view_index=torch.cat(indices, dim=0),
+        neighbor_valid=torch.cat([graph.neighbor_valid for graph in graphs], dim=0),
+        neighbor_current_slot=torch.cat(
+            [graph.neighbor_current_slot for graph in graphs], dim=0
+        ),
+    )

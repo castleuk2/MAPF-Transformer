@@ -227,6 +227,8 @@ cd MAPF-Transformer/MAPF_Semantic_Spatiotemporal_Transformer_Project
 
 python -m pip install -e ../mapf-structured-map-transformer --no-deps
 python -m pip install -e . --no-build-isolation --no-deps
+python build_cpp_extension.py
+python verify_setup.py --config configs/communication_rounds4_6epoch.yaml
 
 CUDA_VISIBLE_DEVICES=0,1 \
 python -m torch.distributed.run --standalone --nproc_per_node=2 \
@@ -235,8 +237,9 @@ python -m torch.distributed.run --standalone --nproc_per_node=2 \
 
 출력은 `runs/sst_communication_r4_6epoch`에 저장됨. Epoch 3과 6에서 각각
 `best_epoch3.pt`, `last_epoch3.pt`, `best_epoch6.pt`, `last_epoch6.pt`를 보존함.
-Rounds=4는 각 frame에서 총 5번 forward하므로 rounds=0 baseline보다 계산량이
-크며, 단순히 여러 Ego view를 batch로 묶는 것과 달리 실제 cross-view message가 전달됨.
+Rounds=4는 Transformer block을 총 5번 실행하지만, Map encoder·Current/History
+tokenizer·spatial fusion·Structure Bias는 첫 pass 전에 한 번만 계산하여 재사용함.
+단순히 여러 Ego view를 batch로 묶는 것과 달리 실제 cross-view message가 전달됨.
 
 ## 14. 학습 속도 최적화
 
@@ -250,10 +253,15 @@ CUDA 접근과 작은 indexing kernel이 발생했으며, 이것이 MPCT보다 �
 - 256-token dense attention을 PyTorch fused SDPA로 실행
 - local-map crop, visible-agent 검색, cell degree를 NumPy 벡터 연산으로 변경
 - candidate/visibility feature를 episode 단위로 cache
+- SST 전용 C++ all-Ego feature/communication-graph generator
+- Communication 5개 pass의 Map·Agent·History context와 Structure Bias 공유
+- Agent 수가 다른 여러 frame을 flattened Ego batch로 결합하고 graph index offset 보정
 - DDP graph를 static graph로 고정하고 100 step마다 실제 samples/s 기록
 
-실제 NPZ 6개 sample의 모든 tensor hash는 변경 전과 일치하고, unit test 16개 및
-attention 수치 동등성 검사를 통과함. 동일 장비의 2-GPU, per-GPU batch 128 probe에서
+실제 학습 episode 24개에서 C++와 Python의 모든 input tensor 및 communication graph가
+일치했으며 C++ all-Ego feature 생성은 11.09배 빨랐음. Cached 4-round inference는
+동일 출력에서 2.89배 빨랐고, 2-GPU multi-frame forward/backward smoke test도 통과함.
+동일 장비의 2-GPU, per-GPU batch 128 baseline probe에서
 100 update를 약 10.7초, 2,390.6 samples/s로 처리했음. 짧은 속도 검사는 다음과 같음.
 
 ```bash
@@ -262,7 +270,7 @@ python -m torch.distributed.run --standalone --nproc_per_node=2 \
   train_ddp.py --config configs/same_data_6epoch.yaml --max-updates 100
 ```
 
-## 14. 추론
+## 15. 추론
 
 단일 Ego preference:
 
@@ -286,7 +294,7 @@ python3 inference_grouped.py \
   --rounds 2
 ```
 
-## 15. NPZ 형식
+## 16. NPZ 형식
 
 ```text
 obstacles : [H, W]
@@ -307,7 +315,7 @@ Action index는 다음 순서임.
 
 자세한 내용은 `docs/DATA_FORMAT.md`를 참고함.
 
-## 16. 검증 범위
+## 17. 검증 범위
 
 포함된 테스트는 다음을 확인함.
 

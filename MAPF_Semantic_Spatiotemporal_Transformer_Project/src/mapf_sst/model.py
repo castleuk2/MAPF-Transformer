@@ -10,7 +10,7 @@ from .map_encoder import StructuredPatchMapEncoder
 from .spatial_fusion import SpatiallyRoutedCandidateMapFusion
 from .structure_bias import StructuredAttentionBias
 from .tokenizers import CurrentAgentTokenizer, HistoryTokenizer
-from .types import PolicyBatch, PolicyOutput, SemanticReconstruction
+from .types import PolicyBatch, PolicyOutput, PreparedPolicyContext, SemanticReconstruction
 
 
 class SemanticSpatiotemporalPolicy(nn.Module):
@@ -213,6 +213,26 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         return_tokens: bool = False,
         return_reconstruction: bool | None = None,
     ) -> PolicyOutput:
+        prepared = self.prepare_context(
+            batch,
+            return_reconstruction=return_reconstruction,
+        )
+        return self.forward_prepared(
+            prepared,
+            coordination_mode=coordination_mode,
+            neighbor_messages=neighbor_messages,
+            neighbor_message_valid=neighbor_message_valid,
+            neighbor_message_source_slot=neighbor_message_source_slot,
+            return_tokens=return_tokens,
+        )
+
+    def prepare_context(
+        self,
+        batch: PolicyBatch,
+        *,
+        return_reconstruction: bool | None = None,
+    ) -> PreparedPolicyContext:
+        """Compute all tensors that do not change between communication rounds."""
         cfg = self.config
         if return_reconstruction is None:
             return_reconstruction = self.training
@@ -233,21 +253,61 @@ class SemanticSpatiotemporalPolicy(nn.Module):
             (current_tokens[:, :, :3], conditioned_candidates), dim=2
         )
         history_tokens = self.history_tokenizer(batch)
+        # Assemble once with masked coordination slots, then retain only the
+        # invariant first 249 tokens. LayerNorm is token-wise, so coordination
+        # tokens can be normalized independently in each later round.
         tokens, padding = self._assemble(
             map_tokens,
             current_tokens,
             history_tokens,
             batch,
-            coordination_mode=coordination_mode,
-            neighbor_messages=neighbor_messages,
-            neighbor_message_valid=neighbor_message_valid,
-            neighbor_message_source_slot=neighbor_message_source_slot,
+            coordination_mode="none",
+            neighbor_messages=None,
+            neighbor_message_valid=None,
+            neighbor_message_source_slot=None,
         )
         attn_bias = (
             self.structure_bias(batch, dtype=tokens.dtype)
             if cfg.use_structure_bias
             else None
         )
+        return PreparedPolicyContext(
+            batch=batch,
+            static_tokens=tokens[:, : cfg.coordination_offset],
+            static_padding=padding[:, : cfg.coordination_offset],
+            attention_bias=attn_bias,
+            map_reconstruction_logits=map_reconstruction,
+        )
+
+    def forward_prepared(
+        self,
+        prepared: PreparedPolicyContext,
+        *,
+        coordination_mode: str,
+        neighbor_messages: torch.Tensor | None = None,
+        neighbor_message_valid: torch.Tensor | None = None,
+        neighbor_message_source_slot: torch.Tensor | None = None,
+        return_tokens: bool = False,
+    ) -> PolicyOutput:
+        cfg = self.config
+        batch = prepared.batch
+        coordination, coordination_padding = self._coordination_tokens(
+            batch.batch_size,
+            prepared.static_tokens.device,
+            prepared.static_tokens.dtype,
+            coordination_mode=coordination_mode,
+            neighbor_messages=neighbor_messages,
+            neighbor_message_valid=neighbor_message_valid,
+            neighbor_message_source_slot=neighbor_message_source_slot,
+        )
+        coordination_field = self.field_embedding(
+            self.field_ids[cfg.coordination_offset :].to(coordination.device)
+        )[None]
+        coordination = self.input_norm(coordination + coordination_field)
+        coordination = coordination.masked_fill(coordination_padding[..., None], 0.0)
+        tokens = torch.cat((prepared.static_tokens, coordination), dim=1)
+        padding = torch.cat((prepared.static_padding, coordination_padding), dim=1)
+        attn_bias = prepared.attention_bias
         for block in self.blocks:
             tokens = block(tokens, attn_bias=attn_bias, key_padding_mask=padding)
         tokens = self.output_norm(tokens)
@@ -300,7 +360,7 @@ class SemanticSpatiotemporalPolicy(nn.Module):
             ego_logits=ego_logits,
             all_current_logits=logits,
             self_message=self_message,
-            map_reconstruction_logits=map_reconstruction,
+            map_reconstruction_logits=prepared.map_reconstruction_logits,
             semantic_reconstruction=semantic,
             token_padding_mask=padding,
             final_tokens=tokens if return_tokens else None,

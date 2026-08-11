@@ -53,7 +53,11 @@ def main() -> None:
         if not config.data.train_manifest:
             raise ValueError("grouped NPZ training requires train_manifest")
         episode_paths = _read_manifest(config.data.train_manifest)
-        builder = EpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
+        if config.data.feature_backend == "cpp":
+            from mapf_sst.cpp import CppEpisodeFeatureBuilder
+            builder = CppEpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
+        else:
+            builder = EpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
 
     for step in range(args.steps):
         if config.data.kind == "synthetic":

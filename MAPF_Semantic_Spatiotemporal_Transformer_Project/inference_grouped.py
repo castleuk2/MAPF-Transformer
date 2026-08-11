@@ -34,7 +34,11 @@ def main() -> None:
         load_checkpoint(args.checkpoint, model=base, map_location=device)
     model = MultiRoundCommunicationPolicy(base).to(device).eval()
     if args.npz:
-        builder = EpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
+        if config.data.feature_backend == "cpp":
+            from mapf_sst.cpp import CppEpisodeFeatureBuilder
+            builder = CppEpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
+        else:
+            builder = EpisodeFeatureBuilder(config.model, coordinate_order=config.data.coordinate_order)
         episode = builder.load_episode(args.npz)
         batch, graph = builder.build_all_views(episode, args.time_step)
     else:
