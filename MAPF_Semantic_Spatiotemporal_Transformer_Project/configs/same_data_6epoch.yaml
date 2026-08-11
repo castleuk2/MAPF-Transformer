@@ -31,6 +31,7 @@ model:
 
 training:
   seed: 42
+  # Per-GPU micro-batch: 128 × 2 GPUs × accumulation 1 = effective batch 256.
   batch_size: 128
   val_batch_size: 256
   epochs: 6

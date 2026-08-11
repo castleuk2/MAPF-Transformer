@@ -42,9 +42,9 @@ def main() -> None:
     config = load_config(args.config)
     if config.training.communication_rounds:
         raise ValueError("this run is the no-communication semantic-token baseline")
-    if config.training.batch_size % world_size:
-        raise ValueError("training.batch_size is the global batch and must divide world_size")
-    local_batch = config.training.batch_size // world_size
+    # Match the earlier packed/raw trainers: batch_size is the micro-batch on
+    # each GPU. With two ranks and no accumulation, 128 means effective 256.
+    local_batch = config.training.batch_size
     seed_everything(config.training.seed + rank)
     output_dir = (ROOT / config.training.output_dir).resolve()
     if rank == 0:
