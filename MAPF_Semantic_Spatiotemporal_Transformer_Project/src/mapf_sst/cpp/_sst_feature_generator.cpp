@@ -40,6 +40,17 @@ class EpisodeFeatureGenerator {
     if(!dynamic_goals_){ distances_.resize(n_); for(int i=0;i<n_;++i)distances_[i]=distance_map(goal(0,i)); }
   }
 
+  void update_history(
+      py::array_t<int64_t,py::array::c_style|py::array::forcecast> positions,
+      py::array_t<int64_t,py::array::c_style|py::array::forcecast> actions) {
+    auto p=positions.request(),a=actions.request();
+    if(p.ndim!=3||p.shape[1]!=n_||p.shape[2]!=2||a.ndim!=2||a.shape[1]!=n_)
+      throw std::invalid_argument("invalid online history shape");
+    tp_=p.shape[0];ta_=a.shape[0];auto*pp=(int64_t*)p.ptr;positions_.resize(tp_*n_);
+    for(int z=0;z<tp_*n_;++z)positions_[z]={(int)pp[2*z],(int)pp[2*z+1]};
+    auto*ap=(int64_t*)a.ptr;actions_.resize(ta_*n_);for(int z=0;z<ta_*n_;++z)actions_[z]=(int)ap[z];
+  }
+
   py::dict build(int step) {
     if(step<0||step>=ta_) throw std::out_of_range("step outside actions");
     if(dynamic_goals_){ distances_.resize(n_); for(int i=0;i<n_;++i)distances_[i]=distance_map(goal(step,i)); }
@@ -93,4 +104,4 @@ class EpisodeFeatureGenerator {
   static int action_delta(const RC&a,const RC&b){int dr=a[0]-b[0],dc=a[1]-b[1];for(int x=0;x<5;++x)if(DR[x]==dr&&DC[x]==dc)return x;return 6;}
 };
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME,m){py::class_<EpisodeFeatureGenerator>(m,"EpisodeFeatureGenerator").def(py::init<py::array_t<uint8_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,int,int,int,int,int,int>()).def("build",&EpisodeFeatureGenerator::build);}
+PYBIND11_MODULE(TORCH_EXTENSION_NAME,m){py::class_<EpisodeFeatureGenerator>(m,"EpisodeFeatureGenerator").def(py::init<py::array_t<uint8_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,int,int,int,int,int,int>()).def("update_history",&EpisodeFeatureGenerator::update_history).def("build",&EpisodeFeatureGenerator::build);}

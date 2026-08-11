@@ -68,6 +68,9 @@ class CppEpisodeFeatureBuilder(EpisodeFeatureBuilder):
 
     def build_all_views(self, episode: Episode, time_step: int) -> tuple[PolicyBatch, CommunicationGraph]:
         raw = self._native_episode(episode).build(int(time_step))
+        return self.convert_raw(raw)
+
+    def convert_raw(self, raw) -> tuple[PolicyBatch, CommunicationGraph]:
         t = self._tensor
         batch = PolicyBatch(
             local_maps=t(raw, "local_maps"),
