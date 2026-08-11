@@ -1,0 +1,2 @@
+{"step": 1, "rounds": 2, "total": 1.478779673576355, "ego_action": 1.3907537460327148, "ranking": -0.0, "map_reconstruction": -0.0, "semantic_reconstruction": 4.401296615600586}
+{"step": 2, "rounds": 2, "total": 1.6530073881149292, "ego_action": 1.565572738647461, "ranking": -0.0, "map_reconstruction": -0.0, "semantic_reconstruction": 4.371735095977783}

@@ -1,0 +1,26 @@
+model:
+  d_model: 256
+  n_heads: 8
+  map_layers: 1
+  map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
+  freeze_map_encoder: true
+  transformer_layers: 2
+  mlp_ratio: 3
+  dropout: 0.1
+training:
+  seed: 42
+  batch_size: 1
+  epochs: 1
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  num_workers: 0
+  amp: false
+  output_dir: runs/communication
+  ego_action_weight: 1.0
+  ranking_loss_weight: 0.0
+  map_loss_weight: 0.0
+  semantic_reconstruction_weight: 0.02
+  communication_rounds: 2
+data:
+  kind: synthetic

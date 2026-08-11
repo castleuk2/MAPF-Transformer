@@ -1,0 +1,29 @@
+model:
+  d_model: 64
+  n_heads: 4
+  map_layers: 1
+  map_checkpoint: null
+  freeze_map_encoder: false
+  transformer_layers: 1
+  mlp_ratio: 2
+  dropout: 0.0
+training:
+  seed: 7
+  batch_size: 2
+  epochs: 1
+  max_steps: 2
+  learning_rate: 0.001
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  num_workers: 0
+  amp: false
+  output_dir: runs/tiny
+  ego_action_weight: 1.0
+  ranking_loss_weight: 0.0
+  map_loss_weight: 0.02
+  semantic_reconstruction_weight: 0.05
+  communication_rounds: 0
+data:
+  kind: synthetic
+  train_samples: 8
+  val_samples: 4

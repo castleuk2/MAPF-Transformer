@@ -1,0 +1,35 @@
+{
+  "environment": {
+    "python": "3.13.5",
+    "pytorch": "2.10.0+cpu"
+  },
+  "tests": {
+    "result": "13 passed",
+    "scope": [
+      "fixed 256-token layout",
+      "structured map encoder",
+      "current/history padding isolation",
+      "history lag and action-outcome separation",
+      "same-track bias",
+      "source/target map routing",
+      "explicit cross-view communication",
+      "ego-only loss and gradients",
+      "checkpoint v3",
+      "NPZ adapter and all-Ego views"
+    ]
+  },
+  "smoke_training": {
+    "baseline_steps": 2,
+    "grouped_communication_steps": 2,
+    "interpretation": "execution/gradient validation only; not MAPF performance"
+  },
+  "not_validated": [
+    "closed-loop Success Rate",
+    "Sum of Costs",
+    "makespan",
+    "deadlock/oscillation",
+    "collision-free joint action",
+    "optimal current-agent/history allocation",
+    "GPU latency and VRAM"
+  ]
+}

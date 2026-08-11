@@ -1,0 +1,57 @@
+model:
+  local_map_size: 17
+  core_map_size: 15
+  patch_size: 3
+  map_tokens: 25
+  max_current_agents: 14
+  current_tokens_per_agent: 8
+  history_tracks: 7
+  history_steps: 4
+  history_tokens_per_step: 4
+  message_neighbors: 6
+  message_query_tokens: 1
+  num_actions: 5
+  d_model: 256
+  n_heads: 8
+  map_layers: 1
+  map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
+  freeze_map_encoder: true
+  transformer_layers: 4
+  mlp_ratio: 4
+  dropout: 0.1
+  map_attention_radius: 1
+  use_spatial_map_fusion: true
+  use_structure_bias: true
+  current_coord_clip: 7
+  history_coord_clip: 31
+  goal_delta_clip: 63
+  max_hops: 1023
+  enable_map_reconstruction: true
+  enable_semantic_reconstruction: true
+
+training:
+  seed: 42
+  batch_size: 16
+  epochs: 10
+  max_steps: null
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  num_workers: 0
+  amp: true
+  output_dir: runs/base
+  ego_action_weight: 1.0
+  ranking_loss_weight: 0.0
+  map_loss_weight: 0.0
+  semantic_reconstruction_weight: 0.05
+  communication_rounds: 0
+
+data:
+  kind: synthetic
+  train_samples: 4096
+  val_samples: 512
+  train_manifest: null
+  val_manifest: null
+  samples_per_epoch: 20000
+  coordinate_order: row_col
+  task_mode: classic

@@ -1,0 +1,4 @@
+ego_logits: (2, 5)
+all_current_logits: (2, 14, 5)
+context: (2, 256, 64)
+padding per sample: [107, 87]

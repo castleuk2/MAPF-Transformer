@@ -1,0 +1,19 @@
+{
+  "ego": 0,
+  "action_order": [
+    "WAIT",
+    "UP",
+    "DOWN",
+    "LEFT",
+    "RIGHT"
+  ],
+  "probabilities": [
+    0.1606864035129547,
+    0.3555355668067932,
+    0.11304163187742233,
+    0.37073639035224915,
+    0.0
+  ],
+  "argmax": 3,
+  "note": "Preference output only; no joint-action backend is assumed."
+}

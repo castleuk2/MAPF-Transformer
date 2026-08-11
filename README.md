@@ -1,5 +1,11 @@
 # MAPF Transformer
 
+> Branch `mapf-semantic-spatiotemporal-transformer`의 주 실험은
+> `MAPF_Semantic_Spatiotemporal_Transformer_Project`임. 기존 프로젝트는 비교와
+> 데이터 재사용을 위해 보존함. 2-GPU Communication Rounds=4 실행 방법은
+> [SST 프로젝트 README](MAPF_Semantic_Spatiotemporal_Transformer_Project/README.md)의
+> “Communication Rounds=4” 절을 따름.
+
 POGEMA 환경에서 MAPF-LNS2 expert trajectory를 생성하고, 계층형
 spatio-temporal Transformer를 imitation learning으로 학습·평가하기 위한
 workspace입니다. MAPF-GPT의 map/seed/agent 구성과 공식 evaluation suite를

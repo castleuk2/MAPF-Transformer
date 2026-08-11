@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mapf-structured-map-transformer"
+version = "0.1.0"
+description = "17x17 halo-aware structured map transformer producing 25 spatial MAPF tokens"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "NovaTek MAPF Project"}]
+dependencies = [
+  "torch>=2.1",
+  "numpy>=1.24",
+  "PyYAML>=6.0",
+  "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+mapf-map-train = "mapf_map_transformer.cli:train_main"
+mapf-map-evaluate = "mapf_map_transformer.cli:evaluate_main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]

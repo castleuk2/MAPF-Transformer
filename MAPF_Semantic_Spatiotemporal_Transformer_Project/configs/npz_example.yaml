@@ -1,0 +1,27 @@
+model:
+  d_model: 256
+  n_heads: 8
+  map_layers: 1
+  map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
+  freeze_map_encoder: true
+  transformer_layers: 4
+  dropout: 0.1
+training:
+  seed: 42
+  batch_size: 16
+  epochs: 20
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  output_dir: runs/npz
+  ego_action_weight: 1.0
+  map_loss_weight: 0.0
+  semantic_reconstruction_weight: 0.05
+  communication_rounds: 0
+data:
+  kind: npz_manifest
+  train_manifest: data/train_manifest.txt
+  val_manifest: data/val_manifest.txt
+  samples_per_epoch: 20000
+  val_samples: 2000
+  coordinate_order: row_col
+  task_mode: classic
