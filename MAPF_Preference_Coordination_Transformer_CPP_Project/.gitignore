@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.so
+.rendered.*
+.pytest_cache/
+.venv/
+runs/
+reports/
+/data/
+*.pt
+!checkpoints/structured_map_policy_exposure_best.pt
+*.pth
+.DS_Store
