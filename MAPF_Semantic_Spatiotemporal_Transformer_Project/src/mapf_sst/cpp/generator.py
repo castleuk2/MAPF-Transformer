@@ -53,6 +53,7 @@ class CppEpisodeFeatureBuilder(EpisodeFeatureBuilder):
                 self.config.max_current_agents,
                 self.config.history_tracks,
                 self.config.history_steps,
+                self.config.message_neighbors,
                 self.config.max_hops,
             )
             self._native[key] = (episode, native)

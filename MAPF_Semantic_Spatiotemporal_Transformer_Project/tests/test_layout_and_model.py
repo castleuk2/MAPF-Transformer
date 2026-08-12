@@ -10,6 +10,8 @@ def test_fixed_256_layout(cfg):
     assert cfg.map_tokens == 25
     assert cfg.current_tokens == 112
     assert cfg.history_tokens == 112
+    assert cfg.history_tracks == 14
+    assert cfg.history_steps == 2
     assert cfg.coordination_tokens == 7
     assert cfg.total_tokens == 256
     model = SemanticSpatiotemporalPolicy(cfg)

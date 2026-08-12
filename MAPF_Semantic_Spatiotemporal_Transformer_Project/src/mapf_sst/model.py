@@ -19,7 +19,7 @@ class SemanticSpatiotemporalPolicy(nn.Module):
     Layout:
       0..24      : Structured map patches
       25..136    : 14 current agents x 8 semantic fields
-      137..248   : 4 lags x 7 tracks x 4 factual history fields
+      137..248   : 2 lags x 14 tracks x 4 factual history fields
       249        : self-message query
       250..255   : up to six neighbor messages
 
@@ -581,7 +581,8 @@ class HierarchicalCandidatePolicy(nn.Module):
         b, n, a, d = candidates.shape
         result = torch.zeros_like(candidates)
         available = torch.zeros(b, n, a, device=candidates.device, dtype=torch.bool)
-        # History tokenizer storage is [B,H,T,F,D]. Only tracks 0..H-1 exist.
+        # History tokenizer storage is [B,H,T,F,D]. In the revised layout all
+        # 14 Current slots have a matching two-step History track.
         for track in range(cfg.history_tracks):
             memory = history[:, track].reshape(b, cfg.history_steps * cfg.history_tokens_per_step, d)
             valid = batch.history_valid[:, track, :, None].expand(

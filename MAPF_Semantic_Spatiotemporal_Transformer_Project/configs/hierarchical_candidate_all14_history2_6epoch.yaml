@@ -1,4 +1,5 @@
 model:
+  architecture: hierarchical_candidate
   local_map_size: 17
   core_map_size: 15
   patch_size: 3
@@ -16,42 +17,49 @@ model:
   map_layers: 1
   map_checkpoint: ../mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt
   freeze_map_encoder: true
-  transformer_layers: 4
+  transformer_layers: 8
+  candidate_layers: 4
   mlp_ratio: 4
   dropout: 0.1
+  token_position_mode: factorized_track
+  additive_embedding_init_std: 0.02
   map_attention_radius: 1
-  use_spatial_map_fusion: true
+  use_spatial_map_fusion: false
   use_structure_bias: true
   current_coord_clip: 7
   history_coord_clip: 31
   goal_delta_clip: 63
   max_hops: 1023
-  enable_map_reconstruction: true
-  enable_semantic_reconstruction: true
+  enable_map_reconstruction: false
+  enable_semantic_reconstruction: false
 
 training:
   seed: 42
-  batch_size: 16
-  epochs: 10
+  batch_size: 128
+  val_batch_size: 256
+  epochs: 6
   max_steps: null
   learning_rate: 0.0003
-  weight_decay: 0.01
+  weight_decay: 0.1
   grad_clip_norm: 1.0
-  num_workers: 0
+  num_workers: 8
   amp: true
-  output_dir: runs/base
+  output_dir: runs/sst_hierarchical_candidate_all14_history2_6epoch
   ego_action_weight: 1.0
   ranking_loss_weight: 0.0
   map_loss_weight: 0.0
-  semantic_reconstruction_weight: 0.05
+  semantic_reconstruction_weight: 0.0
   communication_rounds: 0
 
 data:
-  kind: synthetic
+  kind: npz_manifest
+  train_manifest: ../pogema-mapf-transformer/data/mapf_lns2_1h/train_manifest.jsonl
+  val_manifest: ../pogema-mapf-transformer/data/mapf_lns2_1h/val_manifest.jsonl
   train_samples: 4096
   val_samples: 512
-  train_manifest: null
-  val_manifest: null
   samples_per_epoch: 20000
+  goal_wait_keep_ratio: 0.2
+  max_train_samples: null
+  max_val_samples: 65536
   coordinate_order: row_col
   task_mode: classic

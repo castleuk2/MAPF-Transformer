@@ -209,8 +209,8 @@ class EpisodeFeatureBuilder:
         self, episode: Episode, step: int, ego: int, current_ids: list[int]
     ) -> list[int]:
         # ``current_ids`` is already ordered by current Ego-relative distance.
-        # Reusing its prefix keeps history identity stable and applies the same
-        # simple nearest-agent rule to both Current and History slots.
+        # With the revised 14-track layout this list is the full Current list:
+        # Current slot i and History track i always identify the same agent.
         return current_ids[: self.config.history_tracks]
 
     def build(self, episode: Episode, time_step: int, ego: int) -> PolicyBatch:

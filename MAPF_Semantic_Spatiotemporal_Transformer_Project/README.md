@@ -7,7 +7,7 @@
 ```text
 25 Structured Map
 + 14 × 8 Current-Agent
-+ 7 × 4 × 4 Factual History
++ 14 × 2 × 4 Factual History
 + 1 Self-Message Query
 + 6 Neighbor Messages
 = 256 Tokens
@@ -15,15 +15,17 @@
 
 기본 tokenization 실험에서는 마지막 7개 coordination slot을 모두 mask함. 실제 Agent 간 learned communication을 평가할 때만 `Self-Message Query 1개 + Neighbor Message 6개`로 활성화함.
 
+기존 `7 tracks × 4 steps` 실험 config는 checkpoint 재현을 위해 보존함. 새 기본 및
+`hierarchical_candidate_all14_history2_6epoch.yaml`은 같은 112-token 예산을
+`14 tracks × 2 steps`로 재배치함.
+
 ### 고정 index
 
 ```text
 0   – 24  : Structured Map Tokens                         25
 25  – 136 : Current Agents 14 × 8                       112
-137 – 164 : History t-1, 7 tracks × 4                    28
-165 – 192 : History t-2, 7 tracks × 4                    28
-193 – 220 : History t-3, 7 tracks × 4                    28
-221 – 248 : History t-4, 7 tracks × 4                    28
+137 – 192 : History t-1, 14 tracks × 4                   56
+193 – 248 : History t-2, 14 tracks × 4                   56
 249       : Self-Message Query                            1
 250 – 255 : Neighbor Messages                             6
 ```
@@ -49,9 +51,9 @@ Source/target patch 위치는 token feature로 다시 학습시키지 않고 코
 
 ## 3. Factual History token
 
-Ego와 현재 Manhattan 거리가 가까운 최대 6개 Neighbor를 포함하여 7개 track을
-선택하고, `t-1`부터 `t-4`까지 동일 Agent의 원본 의미를 유지함. 즉 History는
-Current의 거리 정렬 결과 앞 7개 slot을 그대로 사용함.
+Current slot에 선택된 Ego 포함 최대 14개 Agent를 History track과 1:1로 대응시키고,
+각 Agent의 `t-1`, `t-2` 원본 의미를 유지함. 즉 Current slot `i`와 History track `i`는
+항상 같은 Agent이며, 일부 Agent만 더 긴 과거를 받는 불균형을 제거함.
 
 ```text
 [P^τ, G^τ, R^τ, AO^τ]
@@ -92,38 +94,100 @@ Shared MLP, row/column/center encoding, relative-position bias, connectivity bia
 
 Frozen Map reconstruction은 optimizer를 갱신하지 않으므로 기본 학습의 `map_loss_weight`는 0임.
 
-## 5. Candidate–Map 결합
+## 5. 현재 Hierarchical Candidate 구조
 
-`SpatiallyRoutedCandidateMapFusion`은 일반적인 전역 Agent→Map cross-attention 대신 다음의 hybrid 방식을 사용함.
+현재 학습 config는 `configs/hierarchical_candidate_all14_history2_6epoch.yaml`임.
+Map·Current·History를 256-token 배열에 보존하지만, 의미가 다른 token을 처음부터 하나의
+dense attention에 섞지 않고 Candidate가 필요한 정보를 단계적으로 조회함.
 
-1. source patch token을 deterministic gather
-2. target patch token을 deterministic gather
-3. source/target patch 내부 cell slot embedding 추가
-4. source/target 주변 patch에만 sparse local cross-attention
-5. 이후 전체 spatiotemporal Transformer에서 다시 통합
+```text
+17×17 Local Map
+    ↓ Frozen Structured Map Encoder
+25 Map Tokens
 
-이미 알고 있는 공간 대응은 코드로 보장하고, attention은 주변 topology를 학습하도록 역할을 제한함.
+14 Current Agents × [P, G, R, Candidate 5]
+    ↓ Candidate → own P/G/R Cross-Attention
+    ↓ Agent 내부 Candidate 5개 Self-Attention
+70 initialized Candidate Tokens
+    ├─→ 25 Map Tokens Cross-Attention
+    └─→ 동일 Agent의 t-1/t-2 History Cross-Attention
+    ↓ Candidate별 Map/History gate와 residual 결합
+    ↓ 70-Candidate Self-Attention × 4 + MAPF relation bias
+    ↓ Candidate별 shared scalar head
+14 Agents × 5 action logits
+    ↓ slot 0 선택
+Ego WAIT/UP/DOWN/LEFT/RIGHT logits
+```
 
-## 6. Agent 관계
+### 5.1 Candidate 초기화
 
-명시적 Top-K Relation Token을 사용하지 않음. 가능한 모든 current candidate pair에 다음 bias를 직접 적용함.
+각 Candidate는 Current Agent의 `P/G/R` 세 token을 query하여 자신의 현재 상태와 목표
+진행도를 먼저 결합함. 그 뒤 동일 Agent의 다섯 Candidate끼리 self-attention하여 한 Agent
+안에서 행동 대안을 비교함. 이 처리는 14개 Agent에 동일 weight로 병렬 적용됨.
 
-- same-agent block bias
-- same-track temporal bias
-- relative-time bias
-- vertex target overlap bias
-- edge-swap bias
-- occupied-target bias
-- corridor/bottleneck competition bias
-- candidate↔source/target map patch bias
+### 5.2 Candidate → Map Cross-Attention
 
-따라서 24개의 Relation slot 제한이나 24위/25위의 Top-K 불연속이 없음.
+각 Candidate는 25개 Map Token 전체를 조회함. source/target patch, patch 거리,
+source/target 내부 cell 위치는 학습 가능한 soft bias 또는 embedding으로 제공함. 따라서
+Candidate는 자신의 이동과 관련된 위치를 강조하면서도 전체 지형 context를 잃지 않음.
 
-전체 256개 token에는 semantic field embedding과 별도로 학습 가능한 absolute
-position embedding을 더함. 따라서 같은 종류의 field라도 sequence 내 고정 slot
-(Map patch, Agent 번호, history lag, candidate 방향)을 명시적으로 구별할 수 있음.
+### 5.3 Candidate → History Cross-Attention
 
-## 6-1. 8-layer nearest-agent baseline
+Current slot `i`의 Candidate는 History track `i`만 조회함. 한 track은 `t-1`, `t-2`의
+`P/G/R/AO`, 총 8개 token이며, 과거에 관측되지 않은 시점은 key padding mask로 제외함.
+Map과 History Cross-Attention은 같은 Candidate에서 병렬로 계산한 뒤 학습 가능한 gate로 결합함.
+
+### 5.4 Candidate 상호작용
+
+최대 70개 Candidate를 네 개의 Candidate Transformer block에서 함께 처리함. 별도의
+Top-K Relation Token을 만들지 않고 다음 관계를 attention bias로 직접 반영함.
+
+- 같은 Agent에 속한 Candidate
+- 동일 target cell로 이동하는 vertex conflict
+- 서로 위치를 교환하는 edge-swap conflict
+- 다른 Agent의 현재 cell로 진입하는 occupancy 관계
+- 좁은 통로와 bottleneck 경쟁
+- source-source, target-target, source-target 거리
+
+따라서 제한된 Relation slot이나 hard Top-K 경계 없이 모든 선택된 Candidate pair를 비교함.
+
+### 5.5 위치·역할·시간 표현
+
+현재 config의 `factorized_track` 모드는 다음 embedding을 사용함.
+
+```text
+Map       : Frozen Map Encoder의 2-D patch 위치 표현
+Current   : Ego-relative feature + semantic field + shared track
+History   : current-Ego-frame feature + semantic field + shared track + lag
+Candidate : action field + source/target patch·cell
+Message   : message slot + source-agent slot(communication 사용 시)
+```
+
+Current slot `i`와 History track `i`는 같은 track embedding row를 공유함. Field·track·lag·cell
+embedding은 표준편차 0.02로 초기화하며, feature 값과 token 역할을 서로 분리해 표현함.
+
+### 5.6 현재 2-GPU 학습
+
+현재 비교 실험은 기존과 같은 MAPF-LNS2 train/validation manifest를 사용함. GPU당
+micro-batch는 128이고 DDP 2개 rank의 유효 batch는 256임. Map Encoder는 Freeze하며
+Communication 0에서 Ego의 expert action CE만 최적화함.
+
+```bash
+python build_cpp_extension.py
+python verify_setup.py \
+  --config configs/hierarchical_candidate_all14_history2_6epoch.yaml
+
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
+  --standalone --nproc_per_node=2 train_ddp.py \
+  --config configs/hierarchical_candidate_all14_history2_6epoch.yaml
+```
+
+출력은 `runs/sst_hierarchical_candidate_all14_history2_6epoch`에 저장됨. `runs/`와
+checkpoint는 Git에 포함하지 않음.
+
+## 6. 보존된 이전 ablation
+
+### 6.1 8-layer nearest-agent dense baseline
 
 `configs/nearest_8layer_position_6epoch.yaml`은 다음 변경을 묶은 Comm-0 실험 설정임.
 
@@ -140,7 +204,7 @@ CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
   --config configs/nearest_8layer_position_6epoch.yaml
 ```
 
-### Factorized-track 수정 구조
+### 6.2 Factorized-track dense baseline
 
 `configs/nearest_8layer_factorized_track_6epoch.yaml`은 기존 실행과 checkpoint를
 보존하는 별도 ablation임. 256개 slot마다 독립적인 absolute embedding을 주는 대신
@@ -154,44 +218,8 @@ Candidate : action field + source/target patch/cell
 Message   : message slot + source-agent slot
 ```
 
-## Candidate-centric hierarchical policy
-
-`configs/hierarchical_candidate_6epoch.yaml`은 256-token dense backbone과 별도로
-역할별 attention을 구현한 최종 권장 구조임.
-
-```text
-5 Candidate → own P/G/R Cross-Attention
-            → same-agent 5-Candidate Self-Attention
-            ├→ dense 25-Map Cross-Attention + source/target soft bias
-            └→ same-agent 4-lag History Cross-Attention
-            → candidate-wise dynamic Map/History gate
-            → 70-Candidate Dense Self-Attention ×4 + MAPF relation bias
-            → Ego five-candidate shared scalar head
-```
-
-Candidate에는 action-direction embedding과 전체 frame Agent 기준 dynamic target
-occupancy가 추가됨. 따라서 최근접 14개 Token에서 제외된 Agent가 target cell을
-점유해도 그 사실은 사라지지 않음. Map Cross-Attention은 25개 patch를 모두 조회하고
-source·target·patch distance는 hard mask가 아닌 학습 가능한 soft bias로 제공함.
-
-첫 실험은 Ego action CE만 사용하며, 기존 residual semantic reconstruction은 0으로
-설정함. Map encoder는 동일 checkpoint를 strict load하고 Freeze함.
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
-  --standalone --nproc_per_node=2 train_ddp.py \
-  --config configs/hierarchical_candidate_6epoch.yaml
-```
-
-같은 Current Agent와 그 Agent의 네 History 시점은 동일한 track embedding row를
-공유함. Token에 직접 더하는 field·role·lag·track·cell embedding은 모두 표준편차
-0.02로 초기화하여 특정 embedding 종류가 합산값을 지배하지 않게 함.
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
-  --standalone --nproc_per_node=2 train_ddp.py \
-  --config configs/nearest_8layer_factorized_track_6epoch.yaml
-```
+`configs/hierarchical_candidate_6epoch.yaml`의 `7 tracks × 4 steps`도 기존 checkpoint
+재현을 위해 유지함. 현재 `14 tracks × 2 steps`와 총 History token 수는 112개로 같음.
 
 ## 7. 행동 출력
 

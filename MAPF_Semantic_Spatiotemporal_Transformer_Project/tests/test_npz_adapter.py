@@ -28,7 +28,7 @@ def test_npz_episode_adapter_and_all_views(cfg, tmp_path: Path):
     sample = builder.build(episode, 1, 0)
     assert sample.local_maps.shape == (17, 17)
     assert sample.current_xy.shape == (14, 2)
-    assert sample.history_xy.shape == (7, 4, 2)
+    assert sample.history_xy.shape == (14, 2, 2)
     # Ego first, then Manhattan-nearest agents (global id breaks ties).
     assert sample.current_global_ids[:3].tolist() == [0, 1, 2]
     assert sample.history_global_ids[:3].tolist() == [0, 1, 2]
@@ -68,3 +68,5 @@ def test_nearest_agent_selection_and_history_prefix(cfg, tmp_path: Path):
     history = builder._history_ids(episode, 0, 0, current)
     assert current == [0, 1, 2, 3, 4]
     assert history == current[: cfg.history_tracks]
+    assert cfg.history_tracks == cfg.max_current_agents == 14
+    assert cfg.history_steps == 2

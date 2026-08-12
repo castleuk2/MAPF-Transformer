@@ -19,8 +19,8 @@ class ModelConfig:
     # Revised semantic-token contract.
     max_current_agents: int = 14
     current_tokens_per_agent: int = 8
-    history_tracks: int = 7
-    history_steps: int = 4
+    history_tracks: int = 14
+    history_steps: int = 2
     history_tokens_per_step: int = 4
     message_neighbors: int = 6
     message_query_tokens: int = 1
@@ -130,8 +130,10 @@ class ModelConfig:
             raise ValueError("history block must be P, G, R, Action-Outcome")
         if self.message_query_tokens != 1:
             raise ValueError("this implementation uses one self-message query")
-        if self.message_neighbors != self.history_tracks - 1:
-            raise ValueError("message neighbors must match non-ego history tracks")
+        if not 0 <= self.message_neighbors < self.max_current_agents:
+            raise ValueError(
+                "message_neighbors must be between zero and max_current_agents - 1"
+            )
         if self.d_model % self.n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads")
         if self.total_tokens != 256:

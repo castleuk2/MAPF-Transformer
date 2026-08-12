@@ -195,7 +195,7 @@ class HistoryTokenizer(nn.Module):
             )
         )
 
-        # Input lag axis is [t-1, t-2, t-3, t-4].
+        # Input lag axis is ordered [t-1, ..., t-history_steps].
         lag_ids = torch.arange(1, t + 1, device=batch.local_maps.device)
         lag = self.lag_embedding(lag_ids)[None, None, :, :]
         role_ids = torch.ones(h, dtype=torch.long, device=batch.local_maps.device)

@@ -23,8 +23,10 @@ class EpisodeFeatureGenerator {
       py::array_t<int64_t,py::array::c_style|py::array::forcecast> positions,
       py::array_t<int64_t,py::array::c_style|py::array::forcecast> goals,
       py::array_t<int64_t,py::array::c_style|py::array::forcecast> actions,
-      int local=17,int core=15,int max_current=14,int tracks=7,int history=4,int max_hops=1023)
-      :local_(local),core_(core),max_current_(max_current),tracks_(tracks),history_(history),max_hops_(max_hops) {
+      int local=17,int core=15,int max_current=14,int tracks=14,int history=2,
+      int message_neighbors=6,int max_hops=1023)
+      :local_(local),core_(core),max_current_(max_current),tracks_(tracks),history_(history),
+       message_neighbors_(message_neighbors),max_hops_(max_hops) {
     auto o=obstacles.request(),p=positions.request(),g=goals.request(),a=actions.request();
     if(o.ndim!=2||p.ndim!=3||p.shape[2]!=2||a.ndim!=2||g.ndim<2||g.ndim>3||g.shape[g.ndim-1]!=2)
       throw std::invalid_argument("invalid episode array shape");
@@ -61,7 +63,7 @@ class EpisodeFeatureGenerator {
     py::array_t<bool> incore({B,N,A}),free({B,N,A}),greedy({B,N,A}),bneck({B,N,A}),occupied({B,N,A});
     py::array_t<int64_t> hxy({B,H,T,2}),hgoal({B,H,T,2}),hhops({B,H,T}),hsel({B,H,T}),hobs({B,H,T}),hcslot({B,H}),hgids({B,H});
     py::array_t<bool> hvalid({B,H,T}); py::array_t<int64_t> egoaction({B});
-    py::array_t<int64_t> nindex({B,H-1}),nslot({B,H-1}); py::array_t<bool> nvalid({B,H-1});
+    py::array_t<int64_t> nindex({B,message_neighbors_}),nslot({B,message_neighbors_}); py::array_t<bool> nvalid({B,message_neighbors_});
     auto LM=lm.mutable_unchecked<3>();auto CXY=cxy.mutable_unchecked<3>();auto CG=cgoal.mutable_unchecked<3>();auto CH=chops.mutable_unchecked<2>();auto CGI=cgids.mutable_unchecked<2>();
     auto CV=cvalid.mutable_unchecked<2>();auto CR=creset.mutable_unchecked<2>();auto TG=target.mutable_unchecked<4>();auto OH=onehop.mutable_unchecked<3>();auto DE=delta.mutable_unchecked<3>();
     auto IC=incore.mutable_unchecked<3>();auto FR=free.mutable_unchecked<3>();auto GR=greedy.mutable_unchecked<3>();auto BN=bneck.mutable_unchecked<3>();auto OC=occupied.mutable_unchecked<3>();
@@ -85,13 +87,13 @@ class EpisodeFeatureGenerator {
         for(int ac=0;ac<A;++ac){RC q={p[0]+DR[ac],p[1]+DC[ac]};int rr=p[0]-ep[0]+DR[ac]+center,cc=p[1]-ep[1]+DC[ac]+center;TG(ego,s,ac,0)=rr;TG(ego,s,ac,1)=cc;IC(ego,s,ac)=rr>=0&&rr<core_&&cc>=0&&cc<core_;for(int other=0;other<n_;++other)if(other!=gid&&pos(step,other)==q){OC(ego,s,ac)=true;break;}bool f=inside(q[0],q[1])&&obstacles_[index(q)]==0;FR(ego,s,ac)=f;if(!f){DE(ego,s,ac)=3;continue;}int td=distances_[gid][index(q)];OH(ego,s,ac)=td==INF?-1:td;if(cd==INF||td==INF)DE(ego,s,ac)=4;else if(td<cd){DE(ego,s,ac)=0;GR(ego,s,ac)=true;}else if(td>cd)DE(ego,s,ac)=2;else DE(ego,s,ac)=1;BN(ego,s,ac)=degree_[index(q)]<=2;}if(CH(ego,s)==0)GR(ego,s,0)=true;
       }
       for(int tr=0;tr<H;++tr){HC(ego,tr)=-1;HI(ego,tr)=-1;for(int z=0;z<T;++z){HX(ego,tr,z,0)=HX(ego,tr,z,1)=0;HG(ego,tr,z,0)=HG(ego,tr,z,1)=0;HH(ego,tr,z)=max_hops_+2;HS(ego,tr,z)=HO(ego,tr,z)=5;HV(ego,tr,z)=false;}if(tr>=(int)history.size())continue;int gid=history[tr];HI(ego,tr)=gid;auto it=slot.find(gid);HC(ego,tr)=it==slot.end()?-1:it->second;for(int lag=1;lag<=T;++lag){int tau=step-lag;if(tau<0||!is_visible(tau,ego,gid))continue;HV(ego,tr,lag-1)=true;RC p=pos(tau,gid),g=goal(tau,gid);HX(ego,tr,lag-1,0)=p[0]-ep[0];HX(ego,tr,lag-1,1)=p[1]-ep[1];HG(ego,tr,lag-1,0)=g[0]-p[0];HG(ego,tr,lag-1,1)=g[1]-p[1];int d=(dynamic_goals_?distance_map(g):distances_[gid])[index(p)];HH(ego,tr,lag-1)=d==INF?-1:d;HS(ego,tr,lag-1)=actions_[tau*n_+gid];HO(ego,tr,lag-1)=action_delta(pos(tau+1,gid),p);}}
-      EA(ego)=actions_[step*n_+ego];for(int k=0;k<H-1;++k){NI(ego,k)=0;NS(ego,k)=max_current_;NV(ego,k)=false;}int k=0;for(int tr=1;tr<H&&k<H-1;++tr){int gid=HI(ego,tr),sl=HC(ego,tr);if(gid<0||sl<0||gid>=B)continue;NI(ego,k)=gid;NS(ego,k)=sl;NV(ego,k)=true;++k;}
+      EA(ego)=actions_[step*n_+ego];for(int k=0;k<message_neighbors_;++k){NI(ego,k)=0;NS(ego,k)=max_current_;NV(ego,k)=false;}int k=0;for(int tr=1;tr<H&&k<message_neighbors_;++tr){int gid=HI(ego,tr),sl=HC(ego,tr);if(gid<0||sl<0||gid>=B)continue;NI(ego,k)=gid;NS(ego,k)=sl;NV(ego,k)=true;++k;}
     }
     py::dict out;out["local_maps"]=lm;out["current_xy"]=cxy;out["current_goal_delta"]=cgoal;out["current_hops"]=chops;out["current_valid"]=cvalid;out["current_track_reset"]=creset;out["current_global_ids"]=cgids;out["candidate_target_core_xy"]=target;out["candidate_in_core"]=incore;out["candidate_static_free"]=free;out["candidate_one_hop_hops"]=onehop;out["candidate_delta_ctg"]=delta;out["candidate_greedy"]=greedy;out["candidate_bottleneck"]=bneck;out["candidate_dynamic_occupied"]=occupied;out["history_xy"]=hxy;out["history_goal_delta"]=hgoal;out["history_hops"]=hhops;out["history_selected_action"]=hsel;out["history_observed_move"]=hobs;out["history_valid"]=hvalid;out["history_track_current_slot"]=hcslot;out["history_global_ids"]=hgids;out["ego_action"]=egoaction;out["neighbor_view_index"]=nindex;out["neighbor_valid"]=nvalid;out["neighbor_current_slot"]=nslot;return out;
   }
 
  private:
-  int h_,w_,tp_,ta_,n_,local_,core_,max_current_,tracks_,history_,max_hops_;bool dynamic_goals_;
+  int h_,w_,tp_,ta_,n_,local_,core_,max_current_,tracks_,history_,message_neighbors_,max_hops_;bool dynamic_goals_;
   std::vector<uint8_t>obstacles_;std::vector<RC>positions_,goals_;std::vector<int>actions_,degree_;std::vector<std::vector<int>>distances_;
   bool inside(int r,int c)const{return r>=0&&r<h_&&c>=0&&c<w_;}int index(const RC&p)const{return p[0]*w_+p[1];}RC pos(int t,int i)const{return positions_[t*n_+i];}RC goal(int t,int i)const{return goals_[dynamic_goals_?t*n_+i:i];}
   int degree(const RC&p)const{int d=0;for(int a=1;a<5;++a){int r=p[0]+DR[a],c=p[1]+DC[a];if(inside(r,c)&&obstacles_[r*w_+c]==0)++d;}return d;}
@@ -104,4 +106,4 @@ class EpisodeFeatureGenerator {
   static int action_delta(const RC&a,const RC&b){int dr=a[0]-b[0],dc=a[1]-b[1];for(int x=0;x<5;++x)if(DR[x]==dr&&DC[x]==dc)return x;return 6;}
 };
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME,m){py::class_<EpisodeFeatureGenerator>(m,"EpisodeFeatureGenerator").def(py::init<py::array_t<uint8_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,int,int,int,int,int,int>()).def("update_history",&EpisodeFeatureGenerator::update_history).def("build",&EpisodeFeatureGenerator::build);}
+PYBIND11_MODULE(TORCH_EXTENSION_NAME,m){py::class_<EpisodeFeatureGenerator>(m,"EpisodeFeatureGenerator").def(py::init<py::array_t<uint8_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,py::array_t<int64_t,py::array::c_style|py::array::forcecast>,int,int,int,int,int,int,int>()).def("update_history",&EpisodeFeatureGenerator::update_history).def("build",&EpisodeFeatureGenerator::build);}
