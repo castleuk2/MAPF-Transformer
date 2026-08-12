@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from .attention import PreNormAttentionBlock
+from .attention import MultiheadAttentionWithBias, PreNormAttentionBlock
 from .config import ModelConfig
 from .constants import ACTION_FIELD_IDS, Action, TokenField
 from .map_encoder import StructuredPatchMapEncoder
@@ -442,3 +442,257 @@ class SemanticSpatiotemporalPolicy(nn.Module):
             token_padding_mask=padding,
             final_tokens=tokens if return_tokens else None,
         )
+
+
+class HierarchicalCandidatePolicy(nn.Module):
+    """Candidate-centric MAPF policy with explicit state/map/history stages."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.config = config
+        d = config.d_model
+        self.map_encoder = StructuredPatchMapEncoder(config)
+        self.current_tokenizer = CurrentAgentTokenizer(config)
+        self.history_tokenizer = HistoryTokenizer(config)
+
+        # Five action hypotheses query their own P/G/R state memory.
+        self.state_cross = MultiheadAttentionWithBias(d, config.n_heads, config.dropout)
+        self.state_q_norm = nn.LayerNorm(d)
+        self.state_kv_norm = nn.LayerNorm(d)
+        self.state_out_norm = nn.LayerNorm(d)
+        self.same_agent_candidates = PreNormAttentionBlock(
+            d, config.n_heads, config.mlp_ratio, config.dropout
+        )
+
+        # Candidate queries all 25 map patches. Source/target are soft priors,
+        # never hard routing masks.
+        self.map_cross = MultiheadAttentionWithBias(d, config.n_heads, config.dropout)
+        self.map_q_norm = nn.LayerNorm(d)
+        self.map_kv_norm = nn.LayerNorm(d)
+        self.map_source_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.map_target_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.map_distance_bias = nn.Embedding(
+            2 * (config.patches_per_side - 1) + 1, config.n_heads
+        )
+        self.source_cell_embedding = nn.Embedding(config.patch_size**2, d)
+        self.target_cell_embedding = nn.Embedding(config.patch_size**2 + 4, d)
+        self.dynamic_occupancy_embedding = nn.Embedding(2, d)
+        self.action_embedding = nn.Embedding(config.num_actions, d)
+
+        # Each candidate queries only the same agent's four-lag factual memory.
+        self.history_cross = MultiheadAttentionWithBias(d, config.n_heads, config.dropout)
+        self.history_q_norm = nn.LayerNorm(d)
+        self.history_kv_norm = nn.LayerNorm(d)
+
+        # Dynamic, per-sample/per-agent/per-action branch gates.
+        self.branch_gate = nn.Sequential(
+            nn.Linear(3 * d, d), nn.GELU(), nn.Linear(d, 2)
+        )
+        self.fusion_norm = nn.LayerNorm(d)
+        nn.init.constant_(self.branch_gate[-1].bias, -2.0)
+
+        self.candidate_blocks = nn.ModuleList(
+            [
+                PreNormAttentionBlock(d, config.n_heads, config.mlp_ratio, config.dropout)
+                for _ in range(config.candidate_layers)
+            ]
+        )
+        self.candidate_norm = nn.LayerNorm(d)
+        self.same_agent_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.vertex_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.edge_swap_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.occupancy_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.corridor_bias = nn.Parameter(torch.empty(config.n_heads))
+        self.source_distance_bias = nn.Embedding(15, config.n_heads)
+        self.target_distance_bias = nn.Embedding(15, config.n_heads)
+        self.source_target_distance_bias = nn.Embedding(15, config.n_heads)
+        self.candidate_score = nn.Linear(d, 1)
+
+        for parameter in (
+            self.map_source_bias, self.map_target_bias, self.same_agent_bias,
+            self.vertex_bias, self.edge_swap_bias, self.occupancy_bias,
+            self.corridor_bias,
+        ):
+            nn.init.normal_(parameter, std=0.01)
+        for embedding in (
+            self.map_distance_bias, self.source_cell_embedding,
+            self.target_cell_embedding, self.source_distance_bias,
+            self.dynamic_occupancy_embedding,
+            self.action_embedding,
+            self.target_distance_bias, self.source_target_distance_bias,
+        ):
+            nn.init.normal_(embedding.weight, std=0.02)
+
+    def train(self, mode: bool = True) -> "HierarchicalCandidatePolicy":
+        super().train(mode)
+        if self.config.freeze_map_encoder:
+            self.map_encoder.eval()
+        return self
+
+    def _map_context(
+        self, candidates: torch.Tensor, maps: torch.Tensor, batch: PolicyBatch
+    ) -> torch.Tensor:
+        cfg = self.config
+        b, n, a, d = candidates.shape
+        q = n * a
+        center = cfg.core_map_size // 2
+        source = (batch.current_xy + center).clamp(0, cfg.core_map_size - 1)
+        source = source[:, :, None, :].expand(-1, -1, a, -1)
+        target_raw = batch.candidate_target_core_xy
+        target = target_raw.clamp(0, cfg.core_map_size - 1)
+        source_patch = torch.div(source, cfg.patch_size, rounding_mode="floor")
+        target_patch = torch.div(target, cfg.patch_size, rounding_mode="floor")
+        patch_rc = torch.stack(
+            torch.meshgrid(
+                torch.arange(cfg.patches_per_side, device=candidates.device),
+                torch.arange(cfg.patches_per_side, device=candidates.device),
+                indexing="ij",
+            ), dim=-1,
+        ).reshape(cfg.map_tokens, 2)
+        distance = (target_patch.reshape(b, q, 1, 2) - patch_rc[None, None]).abs().sum(-1)
+        distance = distance.clamp_max(self.map_distance_bias.num_embeddings - 1)
+        bias = self.map_distance_bias(distance).permute(0, 3, 1, 2)
+        source_same = (source_patch.reshape(b, q, 1, 2) == patch_rc[None, None]).all(-1)
+        target_same = (target_patch.reshape(b, q, 1, 2) == patch_rc[None, None]).all(-1)
+        target_same &= batch.candidate_in_core.reshape(b, q, 1)
+        bias = bias + self.map_source_bias[None, :, None, None] * source_same[:, None]
+        bias = bias + self.map_target_bias[None, :, None, None] * target_same[:, None]
+
+        source_cell = (source[..., 0] % cfg.patch_size) * cfg.patch_size + source[..., 1] % cfg.patch_size
+        target_cell = (target[..., 0] % cfg.patch_size) * cfg.patch_size + target[..., 1] % cfg.patch_size
+        dr = target_raw[..., 0] - target[..., 0]
+        dc = target_raw[..., 1] - target[..., 1]
+        overflow = torch.where(dr < 0, 0, torch.where(dr > 0, 1, torch.where(dc < 0, 2, 3)))
+        target_cell = torch.where(
+            batch.candidate_in_core, target_cell, cfg.patch_size**2 + overflow
+        )
+        query = candidates + self.source_cell_embedding(source_cell) + self.target_cell_embedding(target_cell)
+        out, _ = self.map_cross(
+            self.map_q_norm(query.reshape(b, q, d)),
+            self.map_kv_norm(maps), self.map_kv_norm(maps), attn_bias=bias,
+            query_padding_mask=(~batch.current_valid[:, :, None].expand(-1, -1, a)).reshape(b, q),
+        )
+        return out.reshape(b, n, a, d)
+
+    def _history_context(
+        self, candidates: torch.Tensor, history: torch.Tensor, batch: PolicyBatch
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        cfg = self.config
+        b, n, a, d = candidates.shape
+        result = torch.zeros_like(candidates)
+        available = torch.zeros(b, n, a, device=candidates.device, dtype=torch.bool)
+        # History tokenizer storage is [B,H,T,F,D]. Only tracks 0..H-1 exist.
+        for track in range(cfg.history_tracks):
+            memory = history[:, track].reshape(b, cfg.history_steps * cfg.history_tokens_per_step, d)
+            valid = batch.history_valid[:, track, :, None].expand(
+                -1, -1, cfg.history_tokens_per_step
+            ).reshape(b, -1)
+            out, _ = self.history_cross(
+                self.history_q_norm(candidates[:, track]),
+                self.history_kv_norm(memory), self.history_kv_norm(memory),
+                key_padding_mask=~valid,
+                query_padding_mask=~batch.current_valid[:, track, None].expand(-1, a),
+            )
+            has = valid.any(-1)
+            result[:, track] = out.masked_fill((~has)[:, None, None], 0.0)
+            available[:, track] = has[:, None]
+        return result, available
+
+    def _candidate_bias(self, batch: PolicyBatch, dtype: torch.dtype) -> torch.Tensor:
+        cfg = self.config
+        b, n, a = batch.candidate_static_free.shape
+        q = n * a
+        agent = torch.arange(n, device=batch.local_maps.device).repeat_interleave(a)
+        source_agent = batch.current_xy
+        source = source_agent[:, :, None, :].expand(-1, -1, a, -1).reshape(b, q, 2)
+        target = batch.candidate_target_core_xy.reshape(b, q, 2)
+        valid = (batch.current_valid[:, :, None] & batch.candidate_static_free).reshape(b, q)
+        pair = valid[:, :, None] & valid[:, None, :]
+        different = agent[:, None] != agent[None, :]
+        same_agent = ~different
+        vertex = (target[:, :, None] == target[:, None, :]).all(-1) & different[None]
+        swap = ((target[:, :, None] == source[:, None, :]).all(-1)
+                & (source[:, :, None] == target[:, None, :]).all(-1) & different[None])
+        occupancy = (target[:, :, None] == source[:, None, :]).all(-1) & different[None]
+        bottleneck = batch.candidate_bottleneck.reshape(b, q)
+        td = (target[:, :, None] - target[:, None, :]).abs().sum(-1)
+        sd = (source[:, :, None] - source[:, None, :]).abs().sum(-1)
+        std = (source[:, :, None] - target[:, None, :]).abs().sum(-1)
+        corridor = bottleneck[:, :, None] & bottleneck[:, None, :] & (td <= 1) & different[None]
+        bias = self.source_distance_bias(sd.clamp_max(14)).permute(0, 3, 1, 2)
+        bias += self.target_distance_bias(td.clamp_max(14)).permute(0, 3, 1, 2)
+        bias += self.source_target_distance_bias(std.clamp_max(14)).permute(0, 3, 1, 2)
+        bias += self.same_agent_bias[None, :, None, None] * same_agent[None, None]
+        bias += self.vertex_bias[None, :, None, None] * (vertex & pair)[:, None]
+        bias += self.edge_swap_bias[None, :, None, None] * (swap & pair)[:, None]
+        bias += self.occupancy_bias[None, :, None, None] * (occupancy & pair)[:, None]
+        bias += self.corridor_bias[None, :, None, None] * (corridor & pair)[:, None]
+        return bias.to(dtype)
+
+    def forward(
+        self, batch: PolicyBatch, *, coordination_mode: str = "none",
+        neighbor_messages: torch.Tensor | None = None,
+        neighbor_message_valid: torch.Tensor | None = None,
+        neighbor_message_source_slot: torch.Tensor | None = None,
+        return_tokens: bool = False, return_reconstruction: bool | None = None,
+    ) -> PolicyOutput:
+        del neighbor_messages, neighbor_message_valid, neighbor_message_source_slot
+        if coordination_mode != "none":
+            raise ValueError("hierarchical_candidate currently supports communication_mode=none")
+        cfg = self.config
+        maps, reconstruction = self.map_encoder(
+            batch.local_maps,
+            return_reconstruction=bool(return_reconstruction and cfg.enable_map_reconstruction),
+        )
+        current, _ = self.current_tokenizer(batch)
+        history = self.history_tokenizer(batch)
+        state, candidates = current[:, :, :3], current[:, :, 3:]
+        b, n, a, d = candidates.shape
+        candidates = candidates + self.dynamic_occupancy_embedding(
+            batch.candidate_dynamic_occupied.long()
+        )
+        candidates = candidates + self.action_embedding(
+            torch.arange(a, device=candidates.device)
+        )[None, None]
+        state_out, _ = self.state_cross(
+            self.state_q_norm(candidates.reshape(b * n, a, d)),
+            self.state_kv_norm(state.reshape(b * n, 3, d)),
+            self.state_kv_norm(state.reshape(b * n, 3, d)),
+        )
+        candidates = self.state_out_norm(candidates + state_out.reshape(b, n, a, d))
+        candidates = self.same_agent_candidates(candidates.reshape(b * n, a, d)).reshape(b, n, a, d)
+        map_context = self._map_context(candidates, maps, batch)
+        history_context, history_available = self._history_context(candidates, history, batch)
+        gates = torch.softmax(
+            self.branch_gate(torch.cat((candidates, map_context, history_context), dim=-1)), dim=-1
+        )
+        gates = torch.stack(
+            (gates[..., 0], gates[..., 1] * history_available.to(gates.dtype)), dim=-1
+        )
+        candidates = self.fusion_norm(
+            candidates + gates[..., :1] * map_context + gates[..., 1:] * history_context
+        )
+        flat = candidates.reshape(b, n * a, d)
+        padding = (~batch.current_valid[:, :, None].expand(-1, -1, a)).reshape(b, n * a)
+        bias = self._candidate_bias(batch, flat.dtype)
+        for block in self.candidate_blocks:
+            flat = block(flat, attn_bias=bias, key_padding_mask=padding)
+        flat = self.candidate_norm(flat)
+        final = flat.reshape(b, n, a, d)
+        logits = self.candidate_score(final).squeeze(-1)
+        action_valid = batch.current_valid[:, :, None] & batch.candidate_static_free
+        logits = logits.masked_fill(~action_valid, -1.0e4)
+        token_mask = torch.ones(b, cfg.total_tokens, device=flat.device, dtype=torch.bool)
+        token_mask[:, : n * a] = padding
+        return PolicyOutput(
+            ego_logits=logits[:, 0], all_current_logits=logits, self_message=None,
+            map_reconstruction_logits=reconstruction, semantic_reconstruction=None,
+            token_padding_mask=token_mask,
+            final_tokens=flat if return_tokens else None,
+        )
+
+
+def build_policy(config: ModelConfig) -> nn.Module:
+    if config.architecture == "hierarchical_candidate":
+        return HierarchicalCandidatePolicy(config)
+    return SemanticSpatiotemporalPolicy(config)

@@ -18,7 +18,7 @@ from train import evaluate, make_datasets, seed_everything
 from mapf_sst.checkpoint import save_checkpoint
 from mapf_sst.config import load_config
 from mapf_sst.losses import compute_loss
-from mapf_sst.model import SemanticSpatiotemporalPolicy
+from mapf_sst.model import build_policy
 from mapf_sst.types import stack_policy_batches
 
 
@@ -81,7 +81,7 @@ def main() -> None:
             persistent_workers=config.training.num_workers > 0,
         )
 
-    raw_model = SemanticSpatiotemporalPolicy(config.model).to(device)
+    raw_model = build_policy(config.model).to(device)
     if config.model.freeze_map_encoder and not raw_model.map_encoder.is_frozen:
         raise RuntimeError("frozen Map contract failed")
     # The no-communication baseline intentionally leaves message-slot parameters

@@ -29,6 +29,7 @@ class PolicyBatch:
     candidate_delta_ctg: torch.Tensor                # [B,N,A]
     candidate_greedy: torch.Tensor                   # [B,N,A]
     candidate_bottleneck: torch.Tensor               # [B,N,A]
+    candidate_dynamic_occupied: torch.Tensor          # [B,N,A], all frame agents
 
     history_xy: torch.Tensor                         # [B,H,T,2], current-ego frame
     history_goal_delta: torch.Tensor                 # [B,H,T,2]

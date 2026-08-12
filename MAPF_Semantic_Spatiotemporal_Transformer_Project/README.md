@@ -154,6 +154,35 @@ Candidate : action field + source/target patch/cell
 Message   : message slot + source-agent slot
 ```
 
+## Candidate-centric hierarchical policy
+
+`configs/hierarchical_candidate_6epoch.yaml`은 256-token dense backbone과 별도로
+역할별 attention을 구현한 최종 권장 구조임.
+
+```text
+5 Candidate → own P/G/R Cross-Attention
+            → same-agent 5-Candidate Self-Attention
+            ├→ dense 25-Map Cross-Attention + source/target soft bias
+            └→ same-agent 4-lag History Cross-Attention
+            → candidate-wise dynamic Map/History gate
+            → 70-Candidate Dense Self-Attention ×4 + MAPF relation bias
+            → Ego five-candidate shared scalar head
+```
+
+Candidate에는 action-direction embedding과 전체 frame Agent 기준 dynamic target
+occupancy가 추가됨. 따라서 최근접 14개 Token에서 제외된 Agent가 target cell을
+점유해도 그 사실은 사라지지 않음. Map Cross-Attention은 25개 patch를 모두 조회하고
+source·target·patch distance는 hard mask가 아닌 학습 가능한 soft bias로 제공함.
+
+첫 실험은 Ego action CE만 사용하며, 기존 residual semantic reconstruction은 0으로
+설정함. Map encoder는 동일 checkpoint를 strict load하고 Freeze함.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
+  --standalone --nproc_per_node=2 train_ddp.py \
+  --config configs/hierarchical_candidate_6epoch.yaml
+```
+
 같은 Current Agent와 그 Agent의 네 History 시점은 동일한 track embedding row를
 공유함. Token에 직접 더하는 field·role·lag·track·cell embedding은 모두 표준편차
 0.02로 초기화하여 특정 embedding 종류가 합산값을 지배하지 않게 함.

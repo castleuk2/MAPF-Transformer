@@ -87,6 +87,7 @@ class CppEpisodeFeatureBuilder(EpisodeFeatureBuilder):
             candidate_delta_ctg=t(raw, "candidate_delta_ctg"),
             candidate_greedy=t(raw, "candidate_greedy", boolean=True),
             candidate_bottleneck=t(raw, "candidate_bottleneck", boolean=True),
+            candidate_dynamic_occupied=t(raw, "candidate_dynamic_occupied", boolean=True),
             history_xy=t(raw, "history_xy"),
             history_goal_delta=t(raw, "history_goal_delta"),
             history_hops=t(raw, "history_hops"),

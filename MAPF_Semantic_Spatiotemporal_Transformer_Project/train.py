@@ -14,7 +14,7 @@ from mapf_sst.checkpoint import save_checkpoint
 from mapf_sst.config import ProjectConfig, load_config
 from mapf_sst.data import EpisodeFeatureBuilder, EpisodeSequenceViewDataset, SyntheticPolicyDataset
 from mapf_sst.losses import compute_loss
-from mapf_sst.model import SemanticSpatiotemporalPolicy
+from mapf_sst.model import build_policy
 from mapf_sst.types import PolicyBatch, stack_policy_batches
 
 
@@ -131,7 +131,7 @@ def main() -> None:
         collate_fn=stack_policy_batches,
     )
 
-    model = SemanticSpatiotemporalPolicy(config.model).to(device)
+    model = build_policy(config.model).to(device)
     if config.model.freeze_map_encoder and not model.map_encoder.is_frozen:
         raise RuntimeError("freeze_map_encoder=true, but trainable map parameters remain")
     trainable_parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]

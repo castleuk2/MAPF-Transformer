@@ -14,7 +14,7 @@ def test_npz_episode_adapter_and_all_views(cfg, tmp_path: Path):
     positions = np.array(
         [
             [[10, 10], [10, 12], [12, 10]],
-            [[10, 11], [10, 13], [11, 10]],
+            [[10, 11], [10, 12], [11, 10]],
             [[10, 12], [10, 14], [10, 10]],
         ],
         dtype=np.int64,
@@ -32,6 +32,9 @@ def test_npz_episode_adapter_and_all_views(cfg, tmp_path: Path):
     # Ego first, then Manhattan-nearest agents (global id breaks ties).
     assert sample.current_global_ids[:3].tolist() == [0, 1, 2]
     assert sample.history_global_ids[:3].tolist() == [0, 1, 2]
+    # Agent 1 currently occupies Ego's RIGHT target; dynamic occupancy is
+    # computed from every frame agent rather than only static obstacles.
+    assert bool(sample.candidate_dynamic_occupied[0, 4])
     batch, graph = builder.build_all_views(episode, 1)
     assert batch.local_maps.shape[0] == 3
     assert graph.neighbor_view_index.shape == (3, 6)

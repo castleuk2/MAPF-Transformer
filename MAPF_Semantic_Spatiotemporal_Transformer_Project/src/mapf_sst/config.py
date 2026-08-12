@@ -9,6 +9,7 @@ import yaml
 
 @dataclass(slots=True)
 class ModelConfig:
+    architecture: str = "dense_256"  # dense_256 | hierarchical_candidate
     # Structured-map contract.
     local_map_size: int = 17
     core_map_size: int = 15
@@ -34,6 +35,7 @@ class ModelConfig:
     map_checkpoint: str | None = None
     freeze_map_encoder: bool = True
     transformer_layers: int = 8
+    candidate_layers: int = 4
     mlp_ratio: int = 4
     dropout: float = 0.1
 
@@ -112,6 +114,8 @@ class ModelConfig:
         return self.max_hops + 3
 
     def validate(self) -> None:
+        if self.architecture not in {"dense_256", "hierarchical_candidate"}:
+            raise ValueError("architecture must be dense_256 or hierarchical_candidate")
         if self.local_map_size != self.core_map_size + 2:
             raise ValueError("local_map_size must be core_map_size + a one-cell halo")
         if self.core_map_size % self.patch_size != 0:
@@ -132,6 +136,8 @@ class ModelConfig:
             raise ValueError("d_model must be divisible by n_heads")
         if self.total_tokens != 256:
             raise ValueError(f"token layout must be exactly 256, got {self.total_tokens}")
+        if self.candidate_layers <= 0:
+            raise ValueError("candidate_layers must be positive")
         if self.map_attention_radius < 0:
             raise ValueError("map_attention_radius must be non-negative")
         if self.token_position_mode not in {"absolute", "factorized_track"}:

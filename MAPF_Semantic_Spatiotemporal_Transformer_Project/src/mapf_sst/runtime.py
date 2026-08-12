@@ -9,7 +9,7 @@ from .checkpoint import load_checkpoint
 from .communication import MultiRoundCommunicationPolicy
 from .config import ModelConfig
 from .cpp import CppEpisodeFeatureBuilder, load_extension
-from .model import SemanticSpatiotemporalPolicy
+from .model import build_policy
 
 
 class SSTPolicyRuntime:
@@ -26,7 +26,7 @@ class SSTPolicyRuntime:
             / "mapf-structured-map-transformer/runs/policy_exposure_structured_25_ce/best.pt"
         )
         self.config = ModelConfig(**values)
-        self.base = SemanticSpatiotemporalPolicy(self.config).to(self.device)
+        self.base = build_policy(self.config).to(self.device)
         load_checkpoint(checkpoint, model=self.base, map_location=self.device)
         self.model = MultiRoundCommunicationPolicy(self.base).to(self.device).eval()
         self.builder = CppEpisodeFeatureBuilder(self.config)

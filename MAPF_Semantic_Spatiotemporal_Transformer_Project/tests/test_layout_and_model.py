@@ -3,7 +3,7 @@ import torch
 from mapf_sst.constants import TokenField
 from mapf_sst.config import ModelConfig
 from mapf_sst.data.synthetic import make_synthetic_policy_batch
-from mapf_sst.model import SemanticSpatiotemporalPolicy
+from mapf_sst.model import HierarchicalCandidatePolicy, SemanticSpatiotemporalPolicy
 
 
 def test_fixed_256_layout(cfg):
@@ -98,3 +98,31 @@ def test_query_and_message_slots(cfg):
     assert query.token_padding_mask[:, 250:].all()
     assert query.self_message.shape == (2, cfg.d_model)
     assert not conditioned.token_padding_mask[:, 249:].any()
+
+
+def test_hierarchical_candidate_forward_and_backward():
+    cfg = ModelConfig(
+        architecture="hierarchical_candidate",
+        d_model=32,
+        n_heads=4,
+        map_layers=1,
+        transformer_layers=1,
+        candidate_layers=2,
+        mlp_ratio=2,
+        dropout=0.0,
+        enable_map_reconstruction=False,
+        enable_semantic_reconstruction=False,
+    )
+    batch = make_synthetic_policy_batch(cfg, batch_size=2, seed=21, num_current_agents=10)
+    model = HierarchicalCandidatePolicy(cfg)
+    output = model(batch, coordination_mode="none", return_tokens=True)
+    assert output.ego_logits.shape == (2, 5)
+    assert output.all_current_logits.shape == (2, 14, 5)
+    assert output.final_tokens.shape == (2, 70, cfg.d_model)
+    assert output.semantic_reconstruction is None
+    output.ego_logits.sum().backward()
+    missing = [
+        name for name, parameter in model.named_parameters()
+        if parameter.requires_grad and parameter.grad is None
+    ]
+    assert missing == []

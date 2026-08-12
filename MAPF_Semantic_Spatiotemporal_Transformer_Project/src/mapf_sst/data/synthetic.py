@@ -182,6 +182,7 @@ def make_synthetic_policy_batch(
         candidate_delta_ctg=delta_ctg,
         candidate_greedy=greedy,
         candidate_bottleneck=bottleneck,
+        candidate_dynamic_occupied=torch.zeros_like(bottleneck),
         history_xy=history_xy,
         history_goal_delta=history_goal_delta,
         history_hops=history_hops,

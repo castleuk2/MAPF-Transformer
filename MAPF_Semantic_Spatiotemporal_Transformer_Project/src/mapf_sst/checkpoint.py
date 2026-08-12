@@ -23,7 +23,7 @@ def save_checkpoint(
 ) -> None:
     payload: dict[str, Any] = {
         "format_version": CHECKPOINT_FORMAT,
-        "architecture": "semantic_spatiotemporal_256",
+        "architecture": config.model.architecture,
         "model": model.state_dict(),
         "config": config.to_dict(),
         "epoch": epoch,

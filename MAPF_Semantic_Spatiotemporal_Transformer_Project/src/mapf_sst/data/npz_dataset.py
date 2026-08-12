@@ -241,6 +241,7 @@ class EpisodeFeatureBuilder:
         delta_ctg = np.full((n, a), int(DeltaCTG.PAD), dtype=np.int64)
         greedy = np.zeros((n, a), dtype=bool)
         bottleneck = np.zeros((n, a), dtype=bool)
+        dynamic_occupied = np.zeros((n, a), dtype=bool)
 
         previous_ids = (
             set(self._rank_current(episode, time_step - 1, ego))
@@ -291,6 +292,11 @@ class EpisodeFeatureBuilder:
                 else:
                     delta_ctg[slot, action] = int(DeltaCTG.SAME)
                 bottleneck[slot, action] = self._degree(episode, target_global) <= 2
+                dynamic_occupied[slot, action] = any(
+                    other != gid
+                    and tuple(map(int, positions[other])) == target_global
+                    for other in range(positions.shape[0])
+                )
             if current_hops[slot] == 0:
                 greedy[slot, int(Action.WAIT)] = True
 
@@ -346,6 +352,7 @@ class EpisodeFeatureBuilder:
             candidate_delta_ctg=torch.from_numpy(delta_ctg).long(),
             candidate_greedy=torch.from_numpy(greedy),
             candidate_bottleneck=torch.from_numpy(bottleneck),
+            candidate_dynamic_occupied=torch.from_numpy(dynamic_occupied),
             history_xy=torch.from_numpy(history_xy).long(),
             history_goal_delta=torch.from_numpy(history_goal).long(),
             history_hops=torch.from_numpy(history_hops).long(),
