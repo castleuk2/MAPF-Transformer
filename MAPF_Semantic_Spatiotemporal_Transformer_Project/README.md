@@ -41,11 +41,17 @@ Agent당 8개 token을 사용함.
 - `R`: Remaining hops와 reachable 상태
 - `C_*`: 방향별 one-hop CTG, ΔCTG, greedy 여부, static feasibility 등 해당 action 자체의 정보
 
+Current slot은 Ego를 0번에 고정하고, 15×15 core 안에서 Ego와의 Manhattan
+거리가 가까운 Agent부터 최대 13명을 선택함. 동일 거리에서는 global Agent ID가
+작은 순서로 고정하여 Python/C++ generator가 동일한 slot을 생성함.
+
 Source/target patch 위치는 token feature로 다시 학습시키지 않고 코드에서 계산함. Static obstacle과 out-of-bound는 hard action mask로 처리함.
 
 ## 3. Factual History token
 
-Ego와 최근 상호작용이 중요한 최대 6개 Neighbor를 포함하여 7개 stable track을 선택하고, `t-1`부터 `t-4`까지 시점별 원본 의미를 유지함.
+Ego와 현재 Manhattan 거리가 가까운 최대 6개 Neighbor를 포함하여 7개 track을
+선택하고, `t-1`부터 `t-4`까지 동일 Agent의 원본 의미를 유지함. 즉 History는
+Current의 거리 정렬 결과 앞 7개 slot을 그대로 사용함.
 
 ```text
 [P^τ, G^τ, R^τ, AO^τ]
@@ -112,6 +118,27 @@ Frozen Map reconstruction은 optimizer를 갱신하지 않으므로 기본 학�
 - candidate↔source/target map patch bias
 
 따라서 24개의 Relation slot 제한이나 24위/25위의 Top-K 불연속이 없음.
+
+전체 256개 token에는 semantic field embedding과 별도로 학습 가능한 absolute
+position embedding을 더함. 따라서 같은 종류의 field라도 sequence 내 고정 slot
+(Map patch, Agent 번호, history lag, candidate 방향)을 명시적으로 구별할 수 있음.
+
+## 6-1. 8-layer nearest-agent baseline
+
+`configs/nearest_8layer_position_6epoch.yaml`은 다음 변경을 묶은 Comm-0 실험 설정임.
+
+- spatiotemporal Transformer 8 blocks
+- Current/History Agent를 Ego 기준 Manhattan 최근접 순으로 선택
+- 256개 고정 slot의 learned absolute position embedding
+- 기존 Structured Map encoder strict load 및 Freeze 유지
+
+2 GPU 학습:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
+  --standalone --nproc_per_node=2 train_ddp.py \
+  --config configs/nearest_8layer_position_6epoch.yaml
+```
 
 ## 7. 행동 출력
 

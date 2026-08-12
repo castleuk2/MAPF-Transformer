@@ -33,7 +33,7 @@ class ModelConfig:
     # loaded strictly and its own saved architecture config is authoritative.
     map_checkpoint: str | None = None
     freeze_map_encoder: bool = True
-    transformer_layers: int = 4
+    transformer_layers: int = 8
     mlp_ratio: int = 4
     dropout: float = 0.1
 

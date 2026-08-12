@@ -190,61 +190,28 @@ class EpisodeFeatureBuilder:
         return result
 
     def _rank_current(self, episode: Episode, step: int, ego: int) -> list[int]:
+        """Select the ego followed by the nearest currently visible agents.
+
+        Distance is Manhattan distance in the global grid.  Global agent id is
+        the deterministic tie-breaker, so Python and C++ produce stable slots.
+        """
         visible = [gid for gid in self._visible(episode, step, ego) if gid != ego]
         positions = episode.positions[step]
-        ego_feasible, ego_greedy = self._candidate_sets(episode, step, ego)
-        scored: list[tuple[tuple[float, ...], int]] = []
-        for gid in visible:
-            feasible, greedy = self._candidate_sets(episode, step, gid)
-            direct_vertex = bool(ego_greedy & greedy)
-            direct_edge = any(
-                et == tuple(map(int, positions[gid]))
-                and nt == tuple(map(int, positions[ego]))
-                for et in ego_greedy
-                for nt in greedy
+        visible.sort(
+            key=lambda gid: (
+                int(np.abs(positions[gid] - positions[ego]).sum()),
+                gid,
             )
-            overlap = len(ego_feasible & feasible)
-            corridor = any(
-                self._degree(episode, target) <= 2
-                for target in (ego_greedy & greedy)
-            )
-            distance = int(np.abs(positions[gid] - positions[ego]).sum())
-            key = (
-                -float(direct_vertex or direct_edge),
-                -float(overlap),
-                -float(corridor),
-                float(distance),
-                float(gid),
-            )
-            scored.append((key, gid))
-        scored.sort(key=lambda item: item[0])
-        return [ego] + [gid for _, gid in scored[: self.config.max_current_agents - 1]]
+        )
+        return [ego] + visible[: self.config.max_current_agents - 1]
 
     def _history_ids(
         self, episode: Episode, step: int, ego: int, current_ids: list[int]
     ) -> list[int]:
-        candidates = [gid for gid in current_ids if gid != ego]
-        scores: list[tuple[float, int]] = []
-        for gid in candidates:
-            score = 0.0
-            for lag in range(self.config.history_steps + 1):
-                tau = step - lag
-                if tau < 0:
-                    continue
-                if gid not in self._visible(episode, tau, ego):
-                    continue
-                score += 2.0
-                distance = float(
-                    np.abs(episode.positions[tau, gid] - episode.positions[tau, ego]).sum()
-                )
-                score += 1.0 / (1.0 + distance)
-                ego_feasible, ego_greedy = self._candidate_sets(episode, tau, ego)
-                feasible, greedy = self._candidate_sets(episode, tau, gid)
-                score += 2.0 * float(bool(ego_greedy & greedy))
-                score += 0.25 * len(ego_feasible & feasible)
-            scores.append((-score, gid))
-        scores.sort(key=lambda item: (item[0], item[1]))
-        return [ego] + [gid for _, gid in scores[: self.config.history_tracks - 1]]
+        # ``current_ids`` is already ordered by current Ego-relative distance.
+        # Reusing its prefix keeps history identity stable and applies the same
+        # simple nearest-agent rule to both Current and History slots.
+        return current_ids[: self.config.history_tracks]
 
     def build(self, episode: Episode, time_step: int, ego: int) -> PolicyBatch:
         cfg = self.config

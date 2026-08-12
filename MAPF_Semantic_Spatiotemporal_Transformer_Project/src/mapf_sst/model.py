@@ -41,6 +41,10 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         field_ids = self._build_field_ids()
         self.register_buffer("field_ids", field_ids, persistent=False)
         self.field_embedding = nn.Embedding(int(TokenField.COUNT), d)
+        # Explicit learned absolute sequence position for every fixed slot.
+        # This is distinct from semantic field identity and coordinate features.
+        self.position_embedding = nn.Embedding(config.total_tokens, d)
+        nn.init.normal_(self.position_embedding.weight, std=0.02)
         self.input_norm = nn.LayerNorm(d)
         self.structure_bias = StructuredAttentionBias(config, field_ids)
         self.blocks = nn.ModuleList(
@@ -199,7 +203,10 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         if tokens.shape[1] != cfg.total_tokens or padding.shape[1] != cfg.total_tokens:
             raise RuntimeError("assembled token layout does not equal 256")
         field = self.field_embedding(self.field_ids.to(tokens.device))[None]
-        tokens = self.input_norm(tokens + field)
+        positions = self.position_embedding(
+            torch.arange(cfg.total_tokens, device=tokens.device)
+        )[None]
+        tokens = self.input_norm(tokens + field + positions)
         return tokens.masked_fill(padding[..., None], 0.0), padding
 
     def forward(
@@ -303,7 +310,16 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         coordination_field = self.field_embedding(
             self.field_ids[cfg.coordination_offset :].to(coordination.device)
         )[None]
-        coordination = self.input_norm(coordination + coordination_field)
+        coordination_position = self.position_embedding(
+            torch.arange(
+                cfg.coordination_offset,
+                cfg.total_tokens,
+                device=coordination.device,
+            )
+        )[None]
+        coordination = self.input_norm(
+            coordination + coordination_field + coordination_position
+        )
         coordination = coordination.masked_fill(coordination_padding[..., None], 0.0)
         tokens = torch.cat((prepared.static_tokens, coordination), dim=1)
         padding = torch.cat((prepared.static_padding, coordination_padding), dim=1)

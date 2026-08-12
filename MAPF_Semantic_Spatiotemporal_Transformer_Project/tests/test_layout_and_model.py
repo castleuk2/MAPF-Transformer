@@ -13,6 +13,8 @@ def test_fixed_256_layout(cfg):
     assert cfg.total_tokens == 256
     model = SemanticSpatiotemporalPolicy(cfg)
     assert model.field_ids.numel() == 256
+    assert model.position_embedding.num_embeddings == 256
+    assert model.position_embedding.embedding_dim == cfg.d_model
     assert TokenField(int(model.field_ids[0])) is TokenField.MAP
     assert TokenField(int(model.field_ids[25])) is TokenField.CURRENT_POSITION
     assert TokenField(int(model.field_ids[32])) is TokenField.CANDIDATE_RIGHT
