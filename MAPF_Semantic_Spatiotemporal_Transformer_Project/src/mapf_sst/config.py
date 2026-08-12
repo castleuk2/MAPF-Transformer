@@ -37,6 +37,13 @@ class ModelConfig:
     mlp_ratio: int = 4
     dropout: float = 0.1
 
+    # Token-position ablation. ``absolute`` preserves the original learned
+    # 256-slot table. ``factorized_track`` uses the pretrained map's 2-D
+    # position, semantic field/lag embeddings, and one track embedding shared
+    # by the same Current and History agent.
+    token_position_mode: str = "absolute"
+    additive_embedding_init_std: float | None = None
+
     # Spatial fusion.
     map_attention_radius: int = 1
     use_spatial_map_fusion: bool = True
@@ -127,6 +134,15 @@ class ModelConfig:
             raise ValueError(f"token layout must be exactly 256, got {self.total_tokens}")
         if self.map_attention_radius < 0:
             raise ValueError("map_attention_radius must be non-negative")
+        if self.token_position_mode not in {"absolute", "factorized_track"}:
+            raise ValueError(
+                "token_position_mode must be absolute or factorized_track"
+            )
+        if (
+            self.additive_embedding_init_std is not None
+            and self.additive_embedding_init_std <= 0
+        ):
+            raise ValueError("additive_embedding_init_std must be positive")
 
 
 @dataclass(slots=True)

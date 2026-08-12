@@ -1,6 +1,7 @@
 import torch
 
 from mapf_sst.constants import TokenField
+from mapf_sst.config import ModelConfig
 from mapf_sst.data.synthetic import make_synthetic_policy_batch
 from mapf_sst.model import SemanticSpatiotemporalPolicy
 
@@ -21,6 +22,44 @@ def test_fixed_256_layout(cfg):
     assert TokenField(int(model.field_ids[137])) is TokenField.HISTORY_POSITION
     assert TokenField(int(model.field_ids[249])) is TokenField.MESSAGE_QUERY
     assert TokenField(int(model.field_ids[255])) is TokenField.NEIGHBOR_MESSAGE
+
+
+def test_factorized_position_shares_current_history_track():
+    cfg = ModelConfig(
+        d_model=32,
+        n_heads=4,
+        map_layers=1,
+        transformer_layers=1,
+        mlp_ratio=2,
+        dropout=0.0,
+        token_position_mode="factorized_track",
+        additive_embedding_init_std=0.02,
+    )
+    model = SemanticSpatiotemporalPolicy(cfg)
+    assert model.position_embedding is None
+    assert model.track_embedding is not None
+
+    # Current agent 2 and History track 2 use the exact same learned row.
+    current = cfg.current_offset + 2 * cfg.current_tokens_per_agent
+    assert model.shared_track_ids[current : current + 8].unique().item() == 2
+    for lag in range(cfg.history_steps):
+        history = (
+            cfg.history_offset
+            + lag * cfg.history_tracks * cfg.history_tokens_per_step
+            + 2 * cfg.history_tokens_per_step
+        )
+        assert model.shared_track_ids[history : history + 4].unique().item() == 2
+
+    # Map/message positions use the zero PAD row; their own encoders provide
+    # map 2-D position and message-slot identity.
+    assert torch.count_nonzero(model.track_embedding.weight[-1]) == 0
+    assert 0.01 < float(model.field_embedding.weight.std().detach()) < 0.03
+    assert 0.01 < float(model.track_embedding.weight[:-1].std().detach()) < 0.03
+
+    batch = make_synthetic_policy_batch(cfg, batch_size=2, seed=9)
+    with torch.no_grad():
+        output = model.eval()(batch, coordination_mode="none", return_tokens=True)
+    assert output.final_tokens.shape == (2, 256, cfg.d_model)
 
 
 def test_forward_shapes_and_candidate_readout(cfg):

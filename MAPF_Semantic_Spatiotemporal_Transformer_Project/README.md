@@ -140,6 +140,30 @@ CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
   --config configs/nearest_8layer_position_6epoch.yaml
 ```
 
+### Factorized-track 수정 구조
+
+`configs/nearest_8layer_factorized_track_6epoch.yaml`은 기존 실행과 checkpoint를
+보존하는 별도 ablation임. 256개 slot마다 독립적인 absolute embedding을 주는 대신
+공간·시간·identity의 의미에 맞게 위치 표현을 분리함.
+
+```text
+Map       : Frozen Structured Map encoder의 2-D patch position
+Current   : Ego-relative coordinate + semantic field + shared track
+History   : current-Ego-frame coordinate + lag + semantic field + shared track
+Candidate : action field + source/target patch/cell
+Message   : message slot + source-agent slot
+```
+
+같은 Current Agent와 그 Agent의 네 History 시점은 동일한 track embedding row를
+공유함. Token에 직접 더하는 field·role·lag·track·cell embedding은 모두 표준편차
+0.02로 초기화하여 특정 embedding 종류가 합산값을 지배하지 않게 함.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.run \
+  --standalone --nproc_per_node=2 train_ddp.py \
+  --config configs/nearest_8layer_factorized_track_6epoch.yaml
+```
+
 ## 7. 행동 출력
 
 Scene Token과 ACT Token을 사용하지 않음. Transformer 이후 Ego의 고정 5개 Candidate Token에서 직접 scalar score를 생성함.

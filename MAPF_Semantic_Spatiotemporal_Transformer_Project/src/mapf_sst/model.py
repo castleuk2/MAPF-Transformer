@@ -41,10 +41,24 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         field_ids = self._build_field_ids()
         self.register_buffer("field_ids", field_ids, persistent=False)
         self.field_embedding = nn.Embedding(int(TokenField.COUNT), d)
-        # Explicit learned absolute sequence position for every fixed slot.
-        # This is distinct from semantic field identity and coordinate features.
-        self.position_embedding = nn.Embedding(config.total_tokens, d)
-        nn.init.normal_(self.position_embedding.weight, std=0.02)
+        if config.token_position_mode == "absolute":
+            # Legacy 256-slot position table retained for checkpoint compatibility.
+            self.position_embedding: nn.Embedding | None = nn.Embedding(
+                config.total_tokens, d
+            )
+            nn.init.normal_(self.position_embedding.weight, std=0.02)
+            self.track_embedding: nn.Embedding | None = None
+        else:
+            self.position_embedding = None
+            # Last row is the non-track/PAD row and remains exactly zero.
+            self.track_embedding = nn.Embedding(
+                config.max_current_agents + 1,
+                d,
+                padding_idx=config.max_current_agents,
+            )
+            self.register_buffer(
+                "shared_track_ids", self._build_shared_track_ids(), persistent=False
+            )
         self.input_norm = nn.LayerNorm(d)
         self.structure_bias = StructuredAttentionBias(config, field_ids)
         self.blocks = nn.ModuleList(
@@ -60,6 +74,9 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         self.message_slot_embedding = nn.Embedding(config.message_neighbors, d)
         self.message_source_slot_embedding = nn.Embedding(config.max_current_agents + 1, d)
         self.message_norm = nn.LayerNorm(d)
+
+        if config.additive_embedding_init_std is not None:
+            self._initialize_additive_embeddings(config.additive_embedding_init_std)
 
         self.candidate_score = nn.Linear(d, 1)
 
@@ -78,6 +95,56 @@ class SemanticSpatiotemporalPolicy(nn.Module):
             self.history_observed_head = nn.Linear(d, len(Action))
         else:
             self.current_position_x_head = None
+
+    def _build_shared_track_ids(self) -> torch.Tensor:
+        """Map Current and History blocks for one agent to the same track id."""
+        cfg = self.config
+        pad = cfg.max_current_agents
+        ids = torch.full((cfg.total_tokens,), pad, dtype=torch.long)
+        for agent in range(cfg.max_current_agents):
+            start = cfg.current_offset + agent * cfg.current_tokens_per_agent
+            ids[start : start + cfg.current_tokens_per_agent] = agent
+        for lag in range(cfg.history_steps):
+            for track in range(cfg.history_tracks):
+                start = (
+                    cfg.history_offset
+                    + lag * cfg.history_tracks * cfg.history_tokens_per_step
+                    + track * cfg.history_tokens_per_step
+                )
+                ids[start : start + cfg.history_tokens_per_step] = track
+        return ids
+
+    def _initialize_additive_embeddings(self, std: float) -> None:
+        """Put embeddings that are added directly to tokens on one scale."""
+        embeddings = [
+            self.field_embedding,
+            self.current_tokenizer.role_embedding,
+            self.current_tokenizer.reset_embedding,
+            self.current_tokenizer.clip_embedding,
+            self.history_tokenizer.lag_embedding,
+            self.history_tokenizer.role_embedding,
+            self.map_fusion.source_cell_embedding,
+            self.map_fusion.target_cell_embedding,
+            self.message_slot_embedding,
+            self.message_source_slot_embedding,
+        ]
+        if self.position_embedding is not None:
+            embeddings.append(self.position_embedding)
+        if self.track_embedding is not None:
+            embeddings.append(self.track_embedding)
+        for embedding in embeddings:
+            nn.init.normal_(embedding.weight, std=std)
+            if embedding.padding_idx is not None:
+                with torch.no_grad():
+                    embedding.weight[embedding.padding_idx].zero_()
+
+    def _position_encoding(
+        self, start: int, end: int, device: torch.device
+    ) -> torch.Tensor:
+        if self.position_embedding is not None:
+            return self.position_embedding(torch.arange(start, end, device=device))
+        assert self.track_embedding is not None
+        return self.track_embedding(self.shared_track_ids[start:end].to(device))
 
     def _build_field_ids(self) -> torch.Tensor:
         cfg = self.config
@@ -203,9 +270,7 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         if tokens.shape[1] != cfg.total_tokens or padding.shape[1] != cfg.total_tokens:
             raise RuntimeError("assembled token layout does not equal 256")
         field = self.field_embedding(self.field_ids.to(tokens.device))[None]
-        positions = self.position_embedding(
-            torch.arange(cfg.total_tokens, device=tokens.device)
-        )[None]
+        positions = self._position_encoding(0, cfg.total_tokens, tokens.device)[None]
         tokens = self.input_norm(tokens + field + positions)
         return tokens.masked_fill(padding[..., None], 0.0), padding
 
@@ -310,12 +375,8 @@ class SemanticSpatiotemporalPolicy(nn.Module):
         coordination_field = self.field_embedding(
             self.field_ids[cfg.coordination_offset :].to(coordination.device)
         )[None]
-        coordination_position = self.position_embedding(
-            torch.arange(
-                cfg.coordination_offset,
-                cfg.total_tokens,
-                device=coordination.device,
-            )
+        coordination_position = self._position_encoding(
+            cfg.coordination_offset, cfg.total_tokens, coordination.device
         )[None]
         coordination = self.input_norm(
             coordination + coordination_field + coordination_position
