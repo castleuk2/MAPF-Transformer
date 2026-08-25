@@ -1,5 +1,8 @@
 # MAPF Transformer
 
+MPCT의 150M MAPF-LNS2 학습, lossless packed 변환 및 2-GPU 실행 방법은
+[MPCT_150M_TRAINING.md](MPCT_150M_TRAINING.md)에 정리되어 있습니다.
+
 POGEMA 환경에서 MAPF-LNS2 expert trajectory를 생성하고, 계층형
 spatio-temporal Transformer를 imitation learning으로 학습·평가하기 위한
 workspace입니다. MAPF-GPT의 map/seed/agent 구성과 공식 evaluation suite를
