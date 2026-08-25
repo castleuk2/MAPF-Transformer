@@ -21,21 +21,25 @@ from mapf_pct.types import stack_policy_batches
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="2-GPU DDP MPCT retraining with full loss tracking")
+    parser = argparse.ArgumentParser(description="Multi-GPU DDP MPCT training")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--resume", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    rank = int(os.environ["RANK"]); local_rank = int(os.environ["LOCAL_RANK"])
+    rank, local_rank = int(os.environ["RANK"]), int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
-    dist.init_process_group("nccl"); torch.cuda.set_device(local_rank)
+    dist.init_process_group("nccl")
+    torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
     config = load_config(args.config)
     if config.training.batch_size % world_size:
         raise ValueError("global batch_size must be divisible by world_size")
+    if config.training.gradient_accumulation_steps != 1:
+        raise ValueError("train_ddp currently requires gradient_accumulation_steps=1")
     local_batch = config.training.batch_size // world_size
     set_seed(config.training.seed + rank)
     output_dir = ROOT / args.output_dir
@@ -68,7 +72,21 @@ def main() -> None:
         lr=config.training.learning_rate, weight_decay=config.training.weight_decay,
         betas=(config.training.beta1, config.training.beta2),
     )
+    best, step, start_epoch = float("inf"), 0, 0
+    if args.resume is not None:
+        checkpoint = torch.load(args.resume.expanduser().resolve(), map_location="cpu", weights_only=False)
+        raw_model.load_state_dict(checkpoint["model"], strict=True)
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        step = int(checkpoint.get("step", 0))
+        start_epoch = int(checkpoint.get("epoch", 0))
+        best = float(checkpoint.get("metrics", {}).get("val_total", float("inf")))
+        if start_epoch >= config.training.epochs:
+            raise ValueError(f"checkpoint epoch={start_epoch} already reaches epochs={config.training.epochs}")
+        if rank == 0:
+            print(f"resume={args.resume} next_epoch={start_epoch + 1} step={step}", flush=True)
+
     total_updates = len(train_loader) * config.training.epochs
+
     def lr_factor(update: int) -> float:
         warmup = min(config.training.warmup_steps, total_updates)
         if warmup and update < warmup:
@@ -76,39 +94,49 @@ def main() -> None:
         progress = (update - warmup) / max(1, total_updates - warmup)
         minimum = config.training.min_learning_rate / config.training.learning_rate
         return minimum + 0.5 * (1.0 - minimum) * (1.0 + math.cos(math.pi * min(1.0, progress)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
-    scaler = torch.amp.GradScaler("cuda", enabled=config.training.amp)
-    best = float("inf"); step = 0
-    component_names = ("action", "ego_action", "neighbor_action", "act_request", "map", "conflict", "reason", "scene_risk", "total")
 
-    for epoch in range(config.training.epochs):
-        sampler.set_epoch(epoch); model.train()
-        sums = torch.zeros(len(component_names) + 2, device=device, dtype=torch.float64)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+    if step:
+        scheduler.last_epoch = step
+        scheduler._step_count = step + 1
+        for group, base_lr in zip(optimizer.param_groups, scheduler.base_lrs):
+            group["lr"] = base_lr * lr_factor(step)
+    scaler = torch.amp.GradScaler("cuda", enabled=config.training.amp)
+    names = ("action", "ego_action", "neighbor_action", "act_request", "map", "conflict", "reason", "scene_risk", "total")
+
+    for epoch in range(start_epoch, config.training.epochs):
+        sampler.set_epoch(epoch)
+        model.train()
+        sums = torch.zeros(len(names) + 2, device=device, dtype=torch.float64)
         for batch in train_loader:
-            batch = batch.to(device); optimizer.zero_grad(set_to_none=True)
+            batch = batch.to(device)
+            optimizer.zero_grad(set_to_none=True)
             with torch.autocast("cuda", enabled=config.training.amp):
                 output = model(batch, return_map_reconstruction=True)
                 losses = compute_loss(output, batch, config.model, config.training)
-            scaler.scale(losses.total).backward(); scaler.unscale_(optimizer)
+            scaler.scale(losses.total).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.grad_clip_norm)
-            scaler.step(optimizer); scaler.update(); scheduler.step(); step += 1
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            step += 1
             count = batch.batch_size
-            for index, name in enumerate(component_names):
+            for index, name in enumerate(names):
                 value = losses.components.get(name)
-                if value is not None: sums[index] += value.detach().double() * count
+                if value is not None:
+                    sums[index] += value.detach().double() * count
             sums[-2] += (output.ego_logits.argmax(-1) == batch.all_agent_actions[:, 0]).sum()
             sums[-1] += count
             if rank == 0 and step % 100 == 0:
                 print(f"epoch={epoch+1} step={step} lr={optimizer.param_groups[0]['lr']:.8f}", flush=True)
         dist.all_reduce(sums, op=dist.ReduceOp.SUM)
-        train_count = float(sums[-1])
-        train_metrics = {f"train_{name}": float(sums[i] / train_count) for i, name in enumerate(component_names)}
-        train_metrics["train_ego_accuracy"] = float(sums[-2] / sums[-1])
-
+        count = float(sums[-1])
+        metrics = {f"train_{name}": float(sums[i] / count) for i, name in enumerate(names)}
+        metrics["train_ego_accuracy"] = float(sums[-2] / sums[-1])
         if rank == 0:
             assert val_loader is not None
-            val_metrics = evaluate(raw_model, val_loader, config, device)
-            event = {"epoch": epoch + 1, "step": step, **train_metrics, **val_metrics}
+            event = {"epoch": epoch + 1, "step": step, **metrics, **evaluate(raw_model, val_loader, config, device)}
             print(json.dumps(event, ensure_ascii=False), flush=True)
             with (output_dir / "metrics.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, ensure_ascii=False) + "\n")

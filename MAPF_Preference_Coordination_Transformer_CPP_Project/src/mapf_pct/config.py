@@ -151,11 +151,13 @@ class TrainingConfig:
 
 @dataclass(slots=True)
 class DataConfig:
-    kind: str = "synthetic"  # synthetic | npz_manifest
+    kind: str = "synthetic"  # synthetic | npz_manifest | packed_policy
     train_samples: int = 4096
     val_samples: int = 512
     train_manifest: str | None = None
     val_manifest: str | None = None
+    packed_train_manifest: str | None = None
+    packed_val_manifest: str | None = None
     samples_per_epoch: int = 20000
     coordinate_order: str = "row_col"  # row_col | xy
     task_mode: str = "one_shot"  # one_shot | lifelong

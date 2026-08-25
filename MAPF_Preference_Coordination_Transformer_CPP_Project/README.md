@@ -1,5 +1,11 @@
 # MPCT with Stateful C++ Feature Generator
 
+## 150M MAPF-LNS2 학습
+
+이 branch의 150M 원본 NPZ 학습, lossless packed 변환·무결성 검증 및 2-GPU
+학습 명령은 저장소 루트의 [`MPCT_150M_TRAINING.md`](../MPCT_150M_TRAINING.md)를
+따른다. 기본 설정의 1 epoch는 약 150M policy sample 전체를 한 번 사용한다.
+
 ## 새로 clone
 
 ```bash

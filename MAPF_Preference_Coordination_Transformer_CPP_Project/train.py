@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Subset
 
 from mapf_pct.checkpoint import save_checkpoint
 from mapf_pct.config import ProjectConfig, load_config
-from mapf_pct.data import EpisodeSequenceSampleDataset, SyntheticPolicyDataset
+from mapf_pct.data import EpisodeSequenceSampleDataset, PackedPolicyDataset, SyntheticPolicyDataset
 from mapf_pct.losses import compute_loss
 from mapf_pct.model import PreferenceCoordinationTransformer
 from mapf_pct.types import stack_policy_batches
@@ -63,6 +63,17 @@ def build_dataset(config: ProjectConfig, train: bool):
             task_mode=data.task_mode,
             target_mode=data.target_mode,
         )
+        if train or data.max_val_samples is None or len(dataset) <= data.max_val_samples:
+            return dataset
+        return balanced_validation_subset(dataset, int(data.max_val_samples))
+    if data.kind == "packed_policy":
+        manifest = data.packed_train_manifest if train else data.packed_val_manifest
+        if manifest is None:
+            raise ValueError("packed_train_manifest/packed_val_manifest is required")
+        manifest = Path(manifest)
+        if not manifest.is_absolute():
+            manifest = (ROOT / manifest).resolve()
+        dataset = PackedPolicyDataset(config.model, manifest)
         if train or data.max_val_samples is None or len(dataset) <= data.max_val_samples:
             return dataset
         return balanced_validation_subset(dataset, int(data.max_val_samples))
