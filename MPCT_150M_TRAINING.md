@@ -143,3 +143,46 @@ it is not equivalent to the previous small-dataset six-epoch run.
 Global batch size is 256: with two GPUs, each process receives 128 samples per
 optimizer update. Packed conversion does not change batch size or optimizer-update
 count; it removes repeated online feature construction.
+
+## 6. Regenerate the same 150M scenarios with LaCAM3
+
+The LaCAM3 pipeline keeps the existing LNS2 Train/Validation manifests, maps,
+starts, goals, Agent counts, 10-second limit, and 128-step limit. Only the expert
+trajectory is replaced. Because LaCAM3 can fail on a different subset and usually
+has a different SoC, the resulting number of policy samples is measured rather
+than forcibly trimmed to exactly 150M.
+
+Build the LaCAM3 shared library once:
+
+```bash
+bash scripts/setup_lacam3_library.sh
+```
+
+Generate Train/Validation trajectories and immediately precompute MPCT features
+with the C++ Packed Generator:
+
+```bash
+PYTHON=/path/to/environment/bin/python \
+WORKERS=24 \
+bash scripts/generate_lacam3_150m_cpp_packed.sh
+```
+
+Default outputs are:
+
+```text
+pogema-mapf-transformer/data/mapf_lacam3_150m/
+├── train_manifest.jsonl
+├── train_manifest.summary.json
+├── train_manifest.failures.json
+├── val_manifest.jsonl
+├── val_manifest.summary.json
+└── val_manifest.failures.json
+
+pogema-mapf-transformer/data/mapf_lacam3_150m_packed_cpp/
+├── train/manifest.jsonl
+└── val/manifest.jsonl
+```
+
+Both stages are resumable. Existing LaCAM3 episode NPZ files and existing C++
+Packed episode files are reused unless `--overwrite` is explicitly supplied to
+the individual Python commands.
