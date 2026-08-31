@@ -73,6 +73,42 @@ python pack_policy_dataset.py \
 The converter is resumable: existing episode packs are reused unless `--overwrite`
 is supplied. Each output directory receives `manifest.jsonl` and `metadata.json`.
 
+## 3C. Precompute with the C++ Feature Generator
+
+Use the C++ entry point for the standard MPCT packing path. It generates all Ego
+features once per frame, attaches the same expert labels, and writes the same
+lossless `PolicyBatch` format consumed by `PackedPolicyDataset`.
+
+```bash
+python build_cpp_extension.py
+
+python pack_policy_dataset_cpp.py \
+  --config configs/mapf_lns2_150m_npz_1epoch.yaml \
+  --manifest ../pogema-mapf-transformer/data/mapf_lns2_150m/train_manifest.jsonl \
+  --output-dir ../pogema-mapf-transformer/data/mapf_lns2_150m_packed_cpp/train \
+  --workers 24
+
+python pack_policy_dataset_cpp.py \
+  --config configs/mapf_lns2_150m_npz_1epoch.yaml \
+  --manifest ../pogema-mapf-transformer/data/mapf_lns2_150m/val_manifest.jsonl \
+  --output-dir ../pogema-mapf-transformer/data/mapf_lns2_150m_packed_cpp/val \
+  --workers 24
+```
+
+Generated manifests mark every record with `feature_generator: "cpp"` and
+`exact_roundtrip_verified: true`. Packing changes feature-computation time and
+storage only; the training loader and model are unchanged.
+
+For a direct Python/C++ audit, generate both outputs from the same source manifest
+and compare them. `--episodes 0` checks the complete dataset.
+
+```bash
+python verify_cpp_python_packed.py \
+  --python-manifest /path/to/python-packed/manifest.jsonl \
+  --cpp-manifest /path/to/cpp-packed/manifest.jsonl \
+  --episodes 100
+```
+
 ## 4. Verify source NPZ and packed equality
 
 ```bash

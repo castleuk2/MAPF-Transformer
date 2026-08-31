@@ -70,7 +70,10 @@ class CppEpisodeFeatureGenerator:
     def _tensor(value) -> torch.Tensor:
         return torch.from_numpy(np.asarray(value))
 
-    def generate(self, obstacles: np.ndarray, positions: np.ndarray, goals: np.ndarray) -> PolicyBatch:
+    def generate_with_slot_ids(
+        self, obstacles: np.ndarray, positions: np.ndarray, goals: np.ndarray
+    ) -> tuple[PolicyBatch, torch.Tensor]:
+        """Return all-Ego features and the local-slot to global-agent mapping."""
         self._ensure(obstacles, goals)
         assert self._native is not None
         raw = {name: self._tensor(value) for name, value in self._native.generate(
@@ -108,34 +111,33 @@ class CppEpisodeFeatureGenerator:
             event_numeric[:, step] *= mask.any(dim=1)[:, None]
 
         remaining = raw["remaining_hops"].long()
-        finite = remaining.float().clamp_max(cfg.max_hops) / max(1, cfg.max_hops)
-        vm = valid.float()
-        vc = valid_count.clamp_min(1).float()
-        mean_hops = (finite * vm).sum(1) / vc
-        variance = (((finite - mean_hops[:, None]) ** 2) * vm).sum(1) / vc
-        masked_min = finite.masked_fill(~valid, float("inf")).amin(1)
-        masked_max = finite.masked_fill(~valid, float("-inf")).amax(1)
         csf = raw["candidate_static_free"].bool()
         cgr = raw["candidate_greedy"].bool()
         cbn = raw["candidate_bottleneck"].bool()
         ccg = raw["candidate_congestion"].float()
-        candidate_denom = vc * cfg.num_actions
-        scene = torch.stack((
-            raw["local_maps"][:, 1:-1, 1:-1].float().mean((1, 2)), valid_count.float() / cfg.max_agents,
-            (on_goal & valid).sum(1) / vc, mean_hops, variance.sqrt(), masked_min, masked_max,
-            (((history_selected[:, :, -1] == int(Action.WAIT)) & valid).sum(1) / vc),
-            (((history_selected[:, :, -1] != history_executed[:, :, -1]) & valid).sum(1) / vc),
-            (csf.float() * valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            (cgr.float() * valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            ((candidate_contenders > 0) & valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            (candidate_edge_swap.float() * valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            (cbn.float() * valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            (ccg * valid[:, :, None]).sum((1, 2)) / candidate_denom,
-            (history_valid & valid[:, :, None]).sum((1, 2)) / (vc * cfg.history_steps),
-        ), dim=1).float()
+        # Match EpisodeFeatureBuilder's scalar reduction order exactly. The
+        # vectorized form differs by one float32 ULP for some means.
+        scene_rows = []
+        for ego in range(b):
+            count = int(valid_count[ego])
+            finite_hops = remaining[ego, :count].float().clamp_max(cfg.max_hops) / max(1, cfg.max_hops)
+            core = raw["local_maps"][ego, 1:-1, 1:-1]
+            scene_rows.append(torch.tensor((
+                float(core.float().mean()), count / cfg.max_agents,
+                float(on_goal[ego, :count].float().mean()), float(finite_hops.mean()),
+                float(finite_hops.std(unbiased=False)), float(finite_hops.min()), float(finite_hops.max()),
+                float((history_selected[ego, :count, -1] == int(Action.WAIT)).float().mean()),
+                float((history_selected[ego, :count, -1] != history_executed[ego, :count, -1]).float().mean()),
+                float(csf[ego, :count].float().mean()), float(cgr[ego, :count].float().mean()),
+                float((candidate_contenders[ego, :count] > 0).float().mean()),
+                float(candidate_edge_swap[ego, :count].float().mean()),
+                float(cbn[ego, :count].float().mean()), float(ccg[ego, :count].mean()),
+                float(history_valid[ego, :count].float().mean()),
+            ), dtype=torch.float32))
+        scene = torch.stack(scene_rows)
 
         zeros_valid = torch.zeros_like(valid)
-        return PolicyBatch(
+        batch = PolicyBatch(
             local_maps=raw["local_maps"].long(), agent_xy=raw["agent_xy"].long(),
             goal_delta=raw["goal_delta"].long(), remaining_hops=remaining, agent_valid=valid,
             track_reset=zeros_valid, on_goal=on_goal, goal_outside=raw["goal_outside"].bool(),
@@ -150,6 +152,11 @@ class CppEpisodeFeatureGenerator:
             event_numeric=event_numeric, event_valid=event_valid, scene_numeric=scene,
             task_mode=torch.full((b,), self.task_mode_id), target_mode=torch.full((b,), self.target_mode_id),
         )
+        return batch, raw["slot_ids"].long()
+
+    def generate(self, obstacles: np.ndarray, positions: np.ndarray, goals: np.ndarray) -> PolicyBatch:
+        batch, _ = self.generate_with_slot_ids(obstacles, positions, goals)
+        return batch
 
     def commit_actions(self, actions: np.ndarray) -> None:
         if self._native is None:
