@@ -3,6 +3,10 @@
 MPCT의 150M MAPF-LNS2 학습, lossless packed 변환 및 2-GPU 실행 방법은
 [MPCT_150M_TRAINING.md](MPCT_150M_TRAINING.md)에 정리되어 있습니다.
 
+150M 원본에서 반복 없이 LaCAM3의 Goal 상태·양보 시점 비율을 맞춘
+200K/20K indexed Dataset을 만들고 동일 조건으로 학습하는 방법은
+[MPCT_150M_JIT_YIELD_V2.md](MPCT_150M_JIT_YIELD_V2.md)에 정리되어 있습니다.
+
 POGEMA 환경에서 MAPF-LNS2 expert trajectory를 생성하고, 계층형
 spatio-temporal Transformer를 imitation learning으로 학습·평가하기 위한
 workspace입니다. MAPF-GPT의 map/seed/agent 구성과 공식 evaluation suite를
