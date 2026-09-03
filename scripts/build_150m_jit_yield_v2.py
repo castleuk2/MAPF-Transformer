@@ -126,7 +126,49 @@ def classify(record: dict):
     return positions, goals, arrivals, mapping, reverse, categories, delays
 
 
-def build(records: list[dict], target: int, seed: int, allow_repeat: bool):
+def census(records: list[dict]):
+    available, available_leave = Counter(), Counter()
+    for episode, record in enumerate(records):
+        _, _, _, _, _, categories, delays = classify(record)
+        available.update(categories.values())
+        available_leave.update(delays.values())
+        if (episode + 1) % 1000 == 0 or episode + 1 == len(records):
+            print(f"census {episode + 1}/{len(records)}", flush=True)
+    return available, available_leave
+
+
+def feasible_target(target: int, available: Counter, available_leave: Counter) -> bool:
+    quotas = largest_remainder(target, TARGET)
+    leave_quotas = largest_remainder(quotas["goal_leave"], DELAY)
+    return (all(quotas[key] <= available[key] for key in quotas)
+            and all(leave_quotas[key] <= available_leave[key] for key in leave_quotas))
+
+
+def maximum_unique_target(available: Counter, available_leave: Counter) -> int:
+    bounds = [int(available[key] / ratio) for key, ratio in TARGET.items() if ratio > 0]
+    for key, ratio in DELAY.items():
+        combined = TARGET["goal_leave"] * ratio
+        if combined > 0:
+            bounds.append(int(available_leave[key] / combined))
+    low, high = 0, max(0, min(bounds))
+    while low < high:
+        middle = (low + high + 1) // 2
+        if feasible_target(middle, available, available_leave):
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def build(records: list[dict], target: int | str, seed: int, allow_repeat: bool):
+    used_auto = target == "auto"
+    if used_auto:
+        census_counts, census_leave = census(records)
+        target = maximum_unique_target(census_counts, census_leave)
+        if target <= 0:
+            raise RuntimeError("the source cannot form a non-empty ratio-matched Dataset")
+        print(f"maximum unique ratio-matched samples={target}", flush=True)
+    target = int(target)
     quotas = largest_remainder(target, TARGET)
     leave_quotas = largest_remainder(quotas["goal_leave"], DELAY)
     # Keep deterministic smallest-hash candidates.  Capacity leaves ample room
@@ -204,7 +246,9 @@ def build(records: list[dict], target: int, seed: int, allow_repeat: bool):
     by_episode: dict[int, list[int]] = defaultdict(list)
     for episode, index in selected:
         by_episode[episode].append(index)
-    return by_episode, {"target_samples": target, "target_category_counts": quotas,
+    return by_episode, {"target_samples": target,
+                        "selection_mode": "maximum_unique" if used_auto else "fixed_size",
+                        "target_category_counts": quotas,
                         "target_leave_delay_counts": leave_quotas,
                         "available_unique_category_counts": dict(available),
                         "available_unique_leave_delay_counts": dict(available_leave),
@@ -234,13 +278,14 @@ def main():
     parser.add_argument("--raw-manifest", type=Path, required=True)
     parser.add_argument("--packed-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--samples", type=int, required=True)
+    parser.add_argument("--samples", required=True, help="integer sample count or 'auto' for maximum unique size")
     parser.add_argument("--seed", type=int, default=20260903)
     parser.add_argument("--allow-repeat", action="store_true")
     parser.add_argument("--max-episodes", type=int, help="smoke-test only")
     args = parser.parse_args()
     records = prepare(args.raw_manifest, args.packed_manifest, args.max_episodes)
-    selected, metadata = build(records, args.samples, args.seed, args.allow_repeat)
+    sample_request: int | str = args.samples if args.samples == "auto" else int(args.samples)
+    selected, metadata = build(records, sample_request, args.seed, args.allow_repeat)
     write_view(args.output, records, selected, metadata)
     print(json.dumps(metadata, indent=2))
 

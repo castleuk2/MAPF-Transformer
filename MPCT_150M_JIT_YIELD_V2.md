@@ -2,15 +2,13 @@
 
 Branch: `mpct-lns2-150m-jit-yield-v2`
 
-This experiment scans the existing 150M MAPF-LNS2 trajectories and selects a
-new 200K Train / 20K Validation view whose Goal-state and yield-timing marginals
-match the measured LaCAM3 distribution.  It does not modify features or labels:
+This experiment scans the existing 150M MAPF-LNS2 trajectories and selects the
+largest Train and Validation views whose Goal-state and yield-timing marginals
+match the measured LaCAM3 distribution without repeating samples. It does not modify features or labels:
 the manifests reference the original C++ precomputed Packed PolicyBatch files.
 
-The purpose is to compare against the earlier 200K experiment at exactly the
-same training exposure while replacing repeated rare samples with diverse
-examples drawn from the much larger corpus.  The builder stops with an error if
-the 150M source still lacks enough unique samples.  Repetition is enabled only
+The default `--samples auto` first counts every required category and determines
+the maximum feasible size from the rarest category. Repetition is enabled only
 when `--allow-repeat` is explicitly supplied.
 
 ## Expected input
@@ -47,13 +45,15 @@ PYTHON_BIN="$(command -v python)" CUDA_VISIBLE_DEVICES=0,1 \
 If the local directories use different names, set `RAW_ROOT`, `PACKED_ROOT`,
 and `OUTPUT_ROOT` before the command.  Dataset construction is deterministic
 with the recorded seeds and uses bounded reservoirs, so it does not hold all
-125M sample indices in RAM.
+125M sample indices in RAM. Auto mode reads the trajectories twice: once for the
+exact census and once to select the maximum-size view.
 
-Training matches the earlier small experiment: frozen Structured Map Encoder,
-global batch 256, two-GPU DDP, six epochs, identical optimizer and loss weights.
+Training uses the same frozen Structured Map Encoder, global batch 256, two-GPU
+DDP, six epochs, optimizer and loss weights. The generated Train/Validation
+sizes are recorded in their respective `metadata.json` files.
 Outputs are written to:
 
 ```text
 MAPF_Preference_Coordination_Transformer_CPP_Project/
-└── runs/mpct_lns2_150m_jit_yield_v2_200k_6epoch/
+└── runs/mpct_lns2_150m_jit_yield_v2_auto_6epoch/
 ```

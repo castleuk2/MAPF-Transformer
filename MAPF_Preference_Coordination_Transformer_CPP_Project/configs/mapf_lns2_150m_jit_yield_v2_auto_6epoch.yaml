@@ -30,7 +30,7 @@ training:
   grad_clip_norm: 1.0
   num_workers: 12
   amp: true
-  output_dir: runs/mpct_lns2_150m_jit_yield_v2_200k_6epoch
+  output_dir: runs/mpct_lns2_150m_jit_yield_v2_auto_6epoch
   ego_action_weight: 1.0
   neighbor_action_weight: 0.35
   act_request_weight: 0.5
@@ -49,4 +49,3 @@ data:
   goal_wait_keep_ratio: 0.2
   max_train_samples: null
   max_val_samples: null
-

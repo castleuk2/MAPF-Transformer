@@ -11,16 +11,15 @@ PROJECT="$ROOT/MAPF_Preference_Coordination_Transformer_CPP_Project"
 "$PYTHON_BIN" "$ROOT/scripts/build_150m_jit_yield_v2.py" \
   --raw-manifest "$RAW_ROOT/train_manifest.jsonl" \
   --packed-manifest "$PACKED_ROOT/train/manifest.jsonl" \
-  --output "$OUTPUT_ROOT/train" --samples 200000 --seed 20260903
+  --output "$OUTPUT_ROOT/train" --samples "${TRAIN_SAMPLES:-auto}" --seed 20260903
 
 "$PYTHON_BIN" "$ROOT/scripts/build_150m_jit_yield_v2.py" \
   --raw-manifest "$RAW_ROOT/val_manifest.jsonl" \
   --packed-manifest "$PACKED_ROOT/val/manifest.jsonl" \
-  --output "$OUTPUT_ROOT/val" --samples 20000 --seed 20260904
+  --output "$OUTPUT_ROOT/val" --samples "${VAL_SAMPLES:-auto}" --seed 20260904
 
 cd "$PROJECT"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}" "$PYTHON_BIN" -m torch.distributed.run \
   --standalone --nproc_per_node=2 train_ddp.py \
-  --config configs/mapf_lns2_150m_jit_yield_v2_200k_6epoch.yaml \
-  --output-dir runs/mpct_lns2_150m_jit_yield_v2_200k_6epoch
-
+  --config configs/mapf_lns2_150m_jit_yield_v2_auto_6epoch.yaml \
+  --output-dir runs/mpct_lns2_150m_jit_yield_v2_auto_6epoch
